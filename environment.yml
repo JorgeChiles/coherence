@@ -1,0 +1,48 @@
+# ──────────────────────────────────────────────────────────────────────
+# AUDIO INGENIERÍA — Conda Environment
+# Proyecto: Animaciones educativas + análisis de sistemas de audio
+#
+# Crear:   conda env create -f environment.yml
+# Activar: conda activate audio-ingenieria
+# ──────────────────────────────────────────────────────────────────────
+
+name: audio-ingenieria
+
+channels:
+  - conda-forge       # principal: paquetes más actualizados
+  - defaults
+
+dependencies:
+  # ── Python ──────────────────────────────────────────────────────────
+  - python=3.11
+
+  # ── Núcleo científico ───────────────────────────────────────────────
+  - numpy>=1.26
+  - scipy>=1.11          # signal.coherence, signal.welch, filtros
+  - pandas>=2.0          # manejo de datos tabulares
+
+  # ── Visualización ───────────────────────────────────────────────────
+  - matplotlib>=3.8      # plots + animaciones
+  - pillow>=10.0         # guardar GIFs animados
+  - ffmpeg               # exportar MP4 desde matplotlib (conda-forge)
+
+  # ── Audio ────────────────────────────────────────────────────────────
+  - librosa>=0.10        # análisis de audio: espectrogramas, mel, CQT
+
+  # ── Jupyter ──────────────────────────────────────────────────────────
+  - jupyterlab>=4.0      # interfaz principal
+  - ipykernel            # kernel de Python para Jupyter
+  - ipywidgets>=8.0      # widgets interactivos en notebooks
+  - nbconvert            # exportar notebooks a HTML/PDF/script
+
+  # ── Utilidades ───────────────────────────────────────────────────────
+  - tqdm                 # barras de progreso
+  - rich                 # output bonito en terminal
+
+  # ── Paquetes via pip (no disponibles en conda-forge) ─────────────────
+  - pip
+  - pip:
+    - soundfile          # leer/escribir WAV, FLAC, AIFF
+    - pydub              # convertir formatos de audio
+    - pedalboard         # plugins de audio VST/AU en Python (Spotify)
+    - manim              # animaciones matemáticas tipo 3Blue1Brown (opcional)

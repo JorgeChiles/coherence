@@ -15,6 +15,7 @@ set -e
 
 echo "==> Coherence — build"
 echo "    Python: $(python --version)"
+echo "    PyInstaller: $(pyinstaller --version)"
 echo ""
 
 # Limpiar builds anteriores
@@ -23,31 +24,56 @@ rm -rf build dist Coherence.spec
 # Detectar plataforma
 PLATFORM=$(uname)
 
+# ── Imports ocultos comunes a todas las plataformas ──────────────────
+HIDDEN=(
+    --hidden-import sounddevice
+    --hidden-import cffi
+    --hidden-import _cffi_backend
+    --hidden-import PyQt6.sip
+    --hidden-import PyQt6.QtCore
+    --hidden-import PyQt6.QtGui
+    --hidden-import PyQt6.QtWidgets
+    --hidden-import matplotlib.backends.backend_qtagg
+    --hidden-import matplotlib.backends.backend_agg
+    --collect-all sounddevice
+)
+
 if [ "$PLATFORM" = "Darwin" ]; then
     echo "==> Plataforma: macOS — generando .app"
+
     pyinstaller \
         --name "Coherence" \
         --onedir \
         --windowed \
         --noconfirm \
         --clean \
-        --hidden-import sounddevice \
-        --hidden-import PyQt6.sip \
+        "${HIDDEN[@]}" \
         run_coherence.py
 
+    # Comprimir para distribución
+    cd dist
+    zip -r Coherence-macOS.zip Coherence.app
+    cd ..
+
     echo ""
-    echo "==> Listo: dist/Coherence.app"
-    echo "    Para distribuir: comprimir como Coherence-macOS.zip y subir a GitHub Releases"
+    echo "╔══════════════════════════════════════════════╗"
+    echo "║  ✓  dist/Coherence.app       — para usar    ║"
+    echo "║  ✓  dist/Coherence-macOS.zip — para subir   ║"
+    echo "╚══════════════════════════════════════════════╝"
+    echo ""
+    echo "Subir a GitHub Releases:"
+    echo "  github.com/JorgeChiles/coherence/releases/new"
+    echo "  Tag: v0.1.0  |  Adjuntar: dist/Coherence-macOS.zip"
 
 elif [ "$PLATFORM" = "Linux" ]; then
     echo "==> Plataforma: Linux — generando binario"
+
     pyinstaller \
         --name "Coherence" \
         --onefile \
         --noconfirm \
         --clean \
-        --hidden-import sounddevice \
-        --hidden-import PyQt6.sip \
+        "${HIDDEN[@]}" \
         run_coherence.py
 
     echo ""
@@ -55,17 +81,17 @@ elif [ "$PLATFORM" = "Linux" ]; then
 
 else
     echo "==> Plataforma: Windows — generando .exe"
+
     pyinstaller \
         --name "Coherence" \
         --onefile \
         --windowed \
         --noconfirm \
         --clean \
-        --hidden-import sounddevice \
-        --hidden-import PyQt6.sip \
+        "${HIDDEN[@]}" \
         run_coherence.py
 
     echo ""
     echo "==> Listo: dist/Coherence.exe"
-    echo "    Para distribuir: subir a GitHub Releases"
+    echo "    Subir a: github.com/JorgeChiles/coherence/releases/new"
 fi
