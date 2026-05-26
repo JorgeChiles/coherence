@@ -28,8 +28,9 @@ venv/
 dist/
 build/
 
-# Datos de medición exportados
+# Datos de medición exportados (excluir TXTs genéricos, pero NO requirements.txt)
 *.txt
+!requirements.txt
 
 # Jupyter
 .ipynb_checkpoints/
