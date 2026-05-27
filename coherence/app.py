@@ -15,6 +15,8 @@ import sys
 import os
 import datetime
 import numpy as np
+from dataclasses import dataclass, field
+from typing import Optional, List
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget,
@@ -50,6 +52,18 @@ TEXT_DIM    = '#4a4a4a'
 BORDER      = '#272727'
 COH_COLOR   = '#ff5252'   # rojo para coherencia
 IR_COLOR    = '#80cbc4'   # verde agua para IR
+
+# ── Paleta de trazas almacenadas ──────────────────────────────────────
+TRACE_PALETTE = [
+    '#4fc3f7',   # 0 cyan claro
+    '#ef9a9a',   # 1 rojo suave
+    '#a5d6a7',   # 2 verde suave
+    '#fff176',   # 3 amarillo
+    '#ce93d8',   # 4 violeta
+    '#80deea',   # 5 turquesa
+    '#ffcc80',   # 6 naranja
+]
+MAX_TRACES = len(TRACE_PALETTE)
 
 
 # ── Stylesheet ────────────────────────────────────────────────────────
@@ -337,6 +351,65 @@ def fmt_freq(f_hz):
     return f'{f_hz:.1f} Hz'
 
 
+# ── Datos de una traza almacenada ─────────────────────────────────────
+
+class TraceData:
+    """Snapshot de una medición para mostrar como referencia estática."""
+    def __init__(self, name, color, freqs, mag_db, phase_deg, gamma2, ir,
+                 delay_ref_ms, coh_thresh, lev_x, lev_y):
+        self.name          = name
+        self.color         = color
+        self.visible       = True
+        self.freqs         = freqs
+        self.mag_db        = mag_db
+        self.phase_deg     = phase_deg
+        self.gamma2        = gamma2
+        self.ir            = ir
+        self.delay_ref_ms  = delay_ref_ms
+        self.coh_thresh    = coh_thresh
+        self.lev_x         = lev_x   # CPB REF 31 bandas
+        self.lev_y         = lev_y   # CPB MED 31 bandas
+
+
+# ── Fila de una traza en el panel ─────────────────────────────────────
+
+class TraceRow(QWidget):
+    """Fila compacta: ■ nombre  [●]  [✕]"""
+
+    def __init__(self, idx, name, color, on_vis, on_del, visible=True, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(20)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(2, 0, 2, 0)
+        h.setSpacing(3)
+
+        dot = QLabel('■')
+        dot.setStyleSheet(f'color:{color};font-size:10px;max-width:12px;background:transparent;')
+        h.addWidget(dot)
+
+        lbl_name = QLabel(name[:12])
+        lbl_name.setStyleSheet(f'color:{TEXT_MID};font-size:9px;background:transparent;')
+        h.addWidget(lbl_name, stretch=1)
+
+        self.btn_v = QPushButton('●')
+        self.btn_v.setFixedSize(16, 16)
+        self.btn_v.setCheckable(True)
+        self.btn_v.setChecked(visible)
+        self.btn_v.setStyleSheet(
+            f'font-size:8px;padding:0;border:none;background:transparent;color:{color};'
+        )
+        self.btn_v.clicked.connect(lambda checked, i=idx: on_vis(i, checked))
+        h.addWidget(self.btn_v)
+
+        btn_d = QPushButton('✕')
+        btn_d.setFixedSize(14, 14)
+        btn_d.setStyleSheet(
+            'font-size:9px;padding:0;border:none;background:transparent;color:#555555;'
+        )
+        btn_d.clicked.connect(lambda _, i=idx: on_del(i))
+        h.addWidget(btn_d)
+
+
 # ── Canvas de Medición (IR / TF+Coh / Phase) ─────────────────────────
 
 class MeasurementCanvas(FigureCanvas):
@@ -359,6 +432,10 @@ class MeasurementCanvas(FigureCanvas):
         self._last_mag_db    = None
         self._last_phase_deg = None
         self._last_ir        = None
+        # Listas paralelas de líneas matplotlib para trazas almacenadas
+        self._trace_tf_lines: List = []
+        self._trace_ph_lines: List = []
+        self._trace_ir_lines: List = []
         self._build()
 
     def _build(self):
@@ -643,6 +720,62 @@ class MeasurementCanvas(FigureCanvas):
         s_g2 = f'{g2:.3f}'                  if g2 is not None else '—'
         return f'PH  │  {fs}  │  {s_ph}  │  γ²: {s_g2}'
 
+    # ── Trazas almacenadas ────────────────────────────────────────────
+
+    def store_trace(self, freqs, mag_db, phase_deg, gamma2, ir,
+                    delay_ref_ms, color, coh_thresh=0.5):
+        """Dibuja una traza estática en los tres paneles y la registra."""
+        mask = (freqs >= 20) & (freqs <= 20000)
+        f    = freqs[mask]
+
+        # TF mag — línea punteada fina
+        line_tf, = self.ax_tf.semilogx(
+            f, mag_db[mask], color=color, lw=1.0, alpha=0.70, ls='--', zorder=2)
+        self._trace_tf_lines.append(line_tf)
+
+        # Phase envuelta (solo donde γ² >= thresh)
+        ok = gamma2[mask] >= coh_thresh
+        if ok.sum() > 2:
+            ph_wrap = ((phase_deg[mask][ok] + 180.0) % 360.0) - 180.0
+            line_ph, = self.ax_ph.semilogx(
+                f[ok], ph_wrap, color=color, lw=1.0, alpha=0.70, ls='--', zorder=2)
+        else:
+            line_ph, = self.ax_ph.semilogx([], [], color=color, lw=1.0, ls='--')
+        self._trace_ph_lines.append(line_ph)
+
+        # IR
+        if ir is not None and len(ir) > 0:
+            t_abs  = np.arange(len(ir)) / 48000.0 * 1000.0
+            t_rel  = t_abs - delay_ref_ms
+            xmin, xmax = self.ax_ir.get_xlim()
+            mask_t = (t_rel >= xmin) & (t_rel <= xmax)
+            if mask_t.sum() > 2:
+                line_ir, = self.ax_ir.plot(
+                    t_rel[mask_t], ir[mask_t],
+                    color=color, lw=0.9, alpha=0.60, ls='--', zorder=2)
+            else:
+                line_ir, = self.ax_ir.plot([], [], color=color, lw=0.9)
+        else:
+            line_ir, = self.ax_ir.plot([], [], color=color, lw=0.9)
+        self._trace_ir_lines.append(line_ir)
+
+        self.draw_idle()
+
+    def remove_trace(self, idx):
+        """Elimina la traza en posición idx de todos los paneles."""
+        if 0 <= idx < len(self._trace_tf_lines):
+            for lst in (self._trace_tf_lines, self._trace_ph_lines, self._trace_ir_lines):
+                lst[idx].remove()
+                lst.pop(idx)
+            self.draw_idle()
+
+    def set_trace_visible(self, idx, visible):
+        """Muestra u oculta la traza idx en todos los paneles."""
+        if 0 <= idx < len(self._trace_tf_lines):
+            for lst in (self._trace_tf_lines, self._trace_ph_lines, self._trace_ir_lines):
+                lst[idx].set_visible(visible)
+            self.draw_idle()
+
     def clear(self):
         for line in (self.line_tf, self.line_coh, self.line_ph, self.line_ir):
             line.set_data([], [])
@@ -683,8 +816,11 @@ class SpectrumCanvas(FigureCanvas):
         super().__init__(self.fig)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.on_cursor_update = None   # conectar desde MainWindow
-        self._last_lx = None
-        self._last_ly = None
+        self._last_lx  = None
+        self._last_ly  = None
+        self._last_Gxx = None
+        self._last_Gyy = None
+        self._trace_sp_lines: List = []   # lista de tuplas (line_x, line_y)
         self._build()
 
     def _build(self):
@@ -763,8 +899,10 @@ class SpectrumCanvas(FigureCanvas):
         lev_x = self._cpb(freqs, Gxx)
         lev_y = self._cpb(freqs, Gyy)
 
-        self._last_lx = lev_x
-        self._last_ly = lev_y
+        self._last_lx  = lev_x
+        self._last_ly  = lev_y
+        self._last_Gxx = Gxx
+        self._last_Gyy = Gyy
 
         fc = _ISO_CENTERS
         self.line_x.set_data(fc, lev_x)
@@ -776,6 +914,32 @@ class SpectrumCanvas(FigureCanvas):
         self._fill_y = self.ax.fill_between(fc, lev_y, -80, color=ORANGE, alpha=0.06)
 
         self.draw_idle()
+
+    # ── Trazas almacenadas ────────────────────────────────────────────
+
+    def store_trace(self, lev_x, lev_y, color):
+        """Dibuja trazas REF (--) y MED (:) como referencia estática."""
+        fc = _ISO_CENTERS
+        line_x, = self.ax.semilogx(
+            fc, lev_x, color=color, lw=1.0, alpha=0.70, ls='--', zorder=2)
+        line_y, = self.ax.semilogx(
+            fc, lev_y, color=color, lw=0.8, alpha=0.55, ls=':',  zorder=2)
+        self._trace_sp_lines.append((line_x, line_y))
+        self.draw_idle()
+
+    def remove_trace(self, idx):
+        if 0 <= idx < len(self._trace_sp_lines):
+            lx, ly = self._trace_sp_lines[idx]
+            lx.remove(); ly.remove()
+            self._trace_sp_lines.pop(idx)
+            self.draw_idle()
+
+    def set_trace_visible(self, idx, visible):
+        if 0 <= idx < len(self._trace_sp_lines):
+            lx, ly = self._trace_sp_lines[idx]
+            lx.set_visible(visible)
+            ly.set_visible(visible)
+            self.draw_idle()
 
     def clear(self):
         self.line_x.set_data([], [])
@@ -828,9 +992,11 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.engine         = AudioEngine()
-        self._frozen        = False
-        self._delay_comp_ms = 0.0    # retardo compensado (delay finder → fase)
+        self.engine           = AudioEngine()
+        self._frozen          = False
+        self._delay_comp_ms   = 0.0    # retardo compensado (delay finder → fase)
+        self._traces: List[TraceData] = []
+        self._trace_color_idx = 0      # cicla por TRACE_PALETTE
 
         self.setWindowTitle('Coherence  v0.1')
         self.setMinimumSize(1100, 720)
@@ -940,6 +1106,34 @@ class MainWindow(QMainWindow):
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.clicked.connect(fn)
             v.addWidget(btn)
+
+        # ── Sección TRAZAS ──────────────────────────────────────────
+        v.addWidget(sep())
+
+        traces_title = QLabel('TRAZAS')
+        traces_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        traces_title.setStyleSheet(
+            f'color:{ACCENT};font-size:9px;letter-spacing:3px;font-weight:bold;'
+            f'padding:3px 0;background:transparent;'
+        )
+        v.addWidget(traces_title)
+
+        btn_save_trace = QPushButton('📌  GUARDAR TRAZA')
+        btn_save_trace.setToolTip(
+            f'Guarda la medición actual como traza de referencia (máx {MAX_TRACES})'
+        )
+        btn_save_trace.setMinimumHeight(30)
+        btn_save_trace.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        btn_save_trace.clicked.connect(self._save_trace)
+        v.addWidget(btn_save_trace)
+
+        # Lista de filas de trazas
+        self._trace_rows_widget = QWidget()
+        self._trace_rows_widget.setStyleSheet('background:transparent;')
+        self._trace_rows_layout = QVBoxLayout(self._trace_rows_widget)
+        self._trace_rows_layout.setContentsMargins(0, 2, 0, 2)
+        self._trace_rows_layout.setSpacing(1)
+        v.addWidget(self._trace_rows_widget)
 
         v.addStretch()
         return panel
@@ -1596,6 +1790,89 @@ class MainWindow(QMainWindow):
         self._save_txt(self._default_path('SP'),
                        ['freq_hz', 'ref_dbfs', 'meas_dbfs'],
                        [freqs2[m2], gxx_db[m2], gyy_db[m2]])
+
+    # ── Overlay de trazas ─────────────────────────────────────────────
+
+    def _save_trace(self):
+        """Captura el estado actual y lo guarda como traza estática de referencia."""
+        if len(self._traces) >= MAX_TRACES:
+            self.sb.showMessage(
+                f'⚠  Máximo {MAX_TRACES} trazas. Eliminá una antes de guardar.', 4000)
+            return
+
+        f = self.canvas_meas._last_freqs
+        if f is None:
+            self.sb.showMessage('⚠  Sin datos — iniciá la medición primero.', 3000)
+            return
+
+        color = TRACE_PALETTE[self._trace_color_idx % len(TRACE_PALETTE)]
+        self._trace_color_idx += 1
+
+        name      = f'T{len(self._traces) + 1}'
+        thresh    = self.spn_thresh.value()
+
+        # Niveles CPB del spectrum (pueden no existir si nunca se vio esa tab)
+        lev_x = self.canvas_spec._last_lx
+        lev_y = self.canvas_spec._last_ly
+        if lev_x is None:
+            lev_x = np.full(31, -80.0)
+            lev_y = np.full(31, -80.0)
+
+        tr = TraceData(
+            name         = name,
+            color        = color,
+            freqs        = f.copy(),
+            mag_db       = self.canvas_meas._last_mag_db.copy(),
+            phase_deg    = self.canvas_meas._last_phase_deg.copy(),
+            gamma2       = self.canvas_meas._last_gamma2.copy(),
+            ir           = (self.canvas_meas._last_ir.copy()
+                            if self.canvas_meas._last_ir is not None else None),
+            delay_ref_ms = self.canvas_meas._delay_ref_ms,
+            coh_thresh   = thresh,
+            lev_x        = lev_x.copy(),
+            lev_y        = lev_y.copy(),
+        )
+        self._traces.append(tr)
+
+        # Dibujar en ambos canvas
+        self.canvas_meas.store_trace(
+            tr.freqs, tr.mag_db, tr.phase_deg, tr.gamma2, tr.ir,
+            tr.delay_ref_ms, tr.color, tr.coh_thresh
+        )
+        self.canvas_spec.store_trace(tr.lev_x, tr.lev_y, tr.color)
+
+        self._rebuild_trace_panel()
+        self.sb.showMessage(f'Traza {name} guardada', 3000)
+
+    def _delete_trace(self, idx):
+        """Elimina la traza idx de canvas y lista."""
+        if 0 <= idx < len(self._traces):
+            self._traces.pop(idx)
+            self.canvas_meas.remove_trace(idx)
+            self.canvas_spec.remove_trace(idx)
+            self._rebuild_trace_panel()
+
+    def _toggle_trace_visible(self, idx, checked):
+        """Muestra u oculta la traza idx."""
+        if 0 <= idx < len(self._traces):
+            self._traces[idx].visible = checked
+            self.canvas_meas.set_trace_visible(idx, checked)
+            self.canvas_spec.set_trace_visible(idx, checked)
+
+    def _rebuild_trace_panel(self):
+        """Reconstruye la lista de filas de trazas desde self._traces."""
+        while self._trace_rows_layout.count():
+            item = self._trace_rows_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for i, tr in enumerate(self._traces):
+            row = TraceRow(
+                idx=i, name=tr.name, color=tr.color,
+                on_vis=self._toggle_trace_visible,
+                on_del=self._delete_trace,
+                visible=tr.visible,
+            )
+            self._trace_rows_layout.addWidget(row)
 
     def closeEvent(self, event):
         self.timer.stop()
