@@ -254,21 +254,21 @@ QStatusBar {{
 }}
 #lbl_app_title {{
     color: {ACCENT};
-    font-size: 12px;
+    font-size: 14px;
     font-weight: bold;
     letter-spacing: 4px;
     padding: 0 10px;
 }}
 #lbl_cursor_info {{
     color: {TEXT_MID};
-    font-size: 10px;
+    font-size: 11px;
     padding: 0 8px;
 }}
 #lbl_clock {{
     color: {TEXT_DIM};
-    font-size: 10px;
+    font-size: 13px;
     padding: 0 10px;
-    letter-spacing: 1px;
+    letter-spacing: 2px;
 }}
 
 /* ── Panel guardar (izquierda) ── */
@@ -1049,7 +1049,7 @@ class MainWindow(QMainWindow):
     def _build_info_bar(self):
         bar = QWidget()
         bar.setObjectName('info_bar')
-        bar.setFixedHeight(26)
+        bar.setFixedHeight(38)
         h = QHBoxLayout(bar)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
@@ -1080,7 +1080,7 @@ class MainWindow(QMainWindow):
     def _build_save_panel(self):
         panel = QWidget()
         panel.setObjectName('save_panel')
-        panel.setFixedWidth(190)
+        panel.setFixedWidth(155)
         v = QVBoxLayout(panel)
         v.setContentsMargins(4, 4, 4, 4)
         v.setSpacing(3)
@@ -1189,7 +1189,7 @@ class MainWindow(QMainWindow):
         # Panel directo — sin scroll
         panel = QWidget()
         panel.setObjectName('settings_panel')
-        panel.setFixedWidth(190)
+        panel.setFixedWidth(155)
 
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -1473,15 +1473,15 @@ class MainWindow(QMainWindow):
         # Valor numérico de coherencia (también sirve como lbl_coh_full)
         self.lbl_gamma2 = QLabel('—')
         self.lbl_gamma2.setStyleSheet(
-            f'color:{COH_COLOR};font-size:14px;font-weight:bold;'
-            f'padding:1px 0;letter-spacing:1px;'
+            f'color:{COH_COLOR};font-size:10px;font-weight:bold;'
+            f'padding:0px 0;letter-spacing:1px;'
         )
         self.lbl_gamma2.setAlignment(Qt.AlignmentFlag.AlignCenter)
         gg.addWidget(self.lbl_gamma2)
 
         self.lbl_gamma2_mark = QLabel('')
         self.lbl_gamma2_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.lbl_gamma2_mark.setStyleSheet('font-size:8px;color:#555;letter-spacing:1px;')
+        self.lbl_gamma2_mark.setStyleSheet('font-size:7px;color:#555;letter-spacing:1px;')
         gg.addWidget(self.lbl_gamma2_mark)
         layout.addWidget(grp_g2)
 
@@ -1699,10 +1699,10 @@ class MainWindow(QMainWindow):
         self.lbl_coh_full.setText(f'{avg_coh:.3f}')
         self.lbl_gamma2.setText(f'{avg_coh:.3f}')
         self.lbl_gamma2.setStyleSheet(
-            f'color:{color};font-size:14px;font-weight:bold;padding:1px 0;letter-spacing:1px;'
+            f'color:{color};font-size:10px;font-weight:bold;padding:0px 0;letter-spacing:1px;'
         )
         self.lbl_gamma2_mark.setText(mark)
-        self.lbl_gamma2_mark.setStyleSheet(f'font-size:10px;color:{color};letter-spacing:1px;')
+        self.lbl_gamma2_mark.setStyleSheet(f'font-size:7px;color:{color};letter-spacing:1px;')
         self.bar_coh.setValue(int(avg_coh * 100))
 
         self.sb.showMessage(
