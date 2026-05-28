@@ -170,8 +170,9 @@ class AudioEngine:
 
         # Buffer pre-dimensionado para hasta 32 averages + 2 de margen
         buf_size = nperseg * 34
-        self.buf_ref  = CircularBuffer(buf_size)
-        self.buf_meas = CircularBuffer(buf_size)
+        self.buf_ref   = CircularBuffer(buf_size)
+        self.buf_meas  = CircularBuffer(buf_size)
+        self.buf_meas2 = CircularBuffer(buf_size)
 
         # Generadores (inicializados una vez, no en el callback)
         self._generators = {
@@ -186,6 +187,7 @@ class AudioEngine:
         self.gain     = 0.3
         self.noise_on = True
         self.ch_meas  = 1       # 1-indexed
+        self.ch_meas2 = 2       # 2do canal de medición
         self.ch_ref   = 4       # 1-indexed
         self.dev_in   = 2
         self.dev_out  = 2
@@ -212,12 +214,14 @@ class AudioEngine:
         Solo slice-assignments de numpy — sin allocs, sin locks en write.
         """
         try:
-            n_in     = indata.shape[1]
-            ref_idx  = min(self.ch_ref  - 1, n_in - 1)
-            meas_idx = min(self.ch_meas - 1, n_in - 1)
+            n_in      = indata.shape[1]
+            ref_idx   = min(self.ch_ref   - 1, n_in - 1)
+            meas_idx  = min(self.ch_meas  - 1, n_in - 1)
+            meas2_idx = min(self.ch_meas2 - 1, n_in - 1)
 
-            self.buf_ref.write( indata[:, ref_idx])
-            self.buf_meas.write(indata[:, meas_idx])
+            self.buf_ref.write(  indata[:, ref_idx])
+            self.buf_meas.write( indata[:, meas_idx])
+            self.buf_meas2.write(indata[:, meas2_idx])
 
             if self.noise_on:
                 gen   = self._generators.get(self.signal_type,
@@ -255,7 +259,7 @@ class AudioEngine:
                 f"no tiene canales de salida.")
 
         # Clampar a lo que el dispositivo soporta
-        n_in  = min(max(self.ch_meas, self.ch_ref), max_in)
+        n_in  = min(max(self.ch_meas, self.ch_meas2, self.ch_ref), max_in)
         n_out = min(2, max_out)
 
         # Ajustar fs si el dispositivo no soporta la solicitada
@@ -303,6 +307,11 @@ class AudioEngine:
         """Retorna (x_ref, y_meas) con n_averages × nperseg muestras."""
         n = self.nperseg * self.n_averages
         return self.buf_ref.read(n), self.buf_meas.read(n)
+
+    def get_buffer_meas2(self):
+        """Retorna y_meas2 (2do canal de medición)."""
+        n = self.nperseg * self.n_averages
+        return self.buf_meas2.read(n)
 
     @property
     def running(self):

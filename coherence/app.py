@@ -24,10 +24,13 @@ from PyQt6.QtWidgets import (
     QPushButton, QSlider, QLabel, QSpinBox,
     QComboBox, QFrame, QGroupBox, QSizePolicy,
     QTabWidget, QStatusBar, QDoubleSpinBox,
-    QProgressBar, QFileDialog,
+    QProgressBar, QFileDialog, QDialog,
+    QDialogButtonBox, QFormLayout, QScrollArea,
+    QMessageBox, QCheckBox,
 )
 from PyQt6.QtCore  import Qt, QTimer, QDateTime
-from PyQt6.QtGui   import QFont, QPalette, QColor
+from PyQt6.QtGui   import QFont, QPalette, QColor, QKeySequence
+from PyQt6.QtWidgets import QMenuBar
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -510,8 +513,10 @@ class MeasurementCanvas(FigureCanvas):
         self.ax_coh.axhline(0.9, color=COH_COLOR, lw=0.7, ls=':', alpha=0.4)
 
         f0 = np.array([20.0, 20000.0])
-        self.line_tf,  = self.ax_tf.semilogx(f0, [0, 0],  color=BLUE,   lw=1.5)
-        self.line_coh, = self.ax_coh.semilogx(f0, [0, 0], color=COH_COLOR, lw=1.0, alpha=0.7)
+        self.line_tf,     = self.ax_tf.semilogx(f0, [0, 0], color=BLUE,   lw=1.5, label='CH1')
+        self.line_tf2,    = self.ax_tf.semilogx([], [],     color=GREEN,  lw=1.2, alpha=0.8, ls='-', label='CH2')
+        self.line_tf_avg, = self.ax_tf.semilogx([], [],     color=ORANGE, lw=1.5, alpha=0.9, ls='-', label='AVG')
+        self.line_coh,    = self.ax_coh.semilogx(f0, [0, 0], color=COH_COLOR, lw=1.0, alpha=0.7)
         self._coh_fill = self.ax_coh.fill_between(f0, [0, 0],
                                                    color=COH_COLOR, alpha=0.08)
 
@@ -531,7 +536,9 @@ class MeasurementCanvas(FigureCanvas):
         self.ax_ph.set_yticks([-180, -90, 0, 90, 180])
         self.ax_ph.tick_params(axis='y', labelsize=7, colors=TEXT_MID)
 
-        self.line_ph, = self.ax_ph.semilogx(f0, [0, 0], color=ORANGE, lw=1.0, alpha=0.8)
+        self.line_ph,     = self.ax_ph.semilogx(f0, [0, 0], color=BLUE,   lw=1.0, alpha=0.8)
+        self.line_ph2,    = self.ax_ph.semilogx([], [],     color=GREEN,  lw=0.9, alpha=0.75, ls='-')
+        self.line_ph_avg, = self.ax_ph.semilogx([], [],     color=ORANGE, lw=1.2, alpha=0.9,  ls='-')
 
         # ── Crosshairs (cursor) — vertical + horizontal por panel ──
         _ck = dict(color=TEXT_MID, lw=0.7, ls=':', alpha=0.0, zorder=20)
@@ -615,6 +622,38 @@ class MeasurementCanvas(FigureCanvas):
             self.line_ir_peak.set_xdata([peak_t_rel, peak_t_rel])
 
         self.draw_idle()
+
+    def update_ch2(self, freqs, mag_db, phase_deg, gamma2, coh_thresh=0.5):
+        """Actualiza las líneas del 2do canal de medición."""
+        if freqs is None:
+            self.line_tf2.set_data([], [])
+            self.line_ph2.set_data([], [])
+            return
+        mask = (freqs >= 20) & (freqs <= 20000)
+        f    = freqs[mask]
+        self.line_tf2.set_data(f, mag_db[mask])
+        ok = gamma2[mask] >= coh_thresh
+        if ok.sum() > 2:
+            ph_wrap = ((phase_deg[mask][ok] + 180.0) % 360.0) - 180.0
+            self.line_ph2.set_data(f[ok], ph_wrap)
+        else:
+            self.line_ph2.set_data([], [])
+
+    def update_avg(self, freqs, mag_db_avg, phase_deg_avg, gamma2, coh_thresh=0.5):
+        """Actualiza la línea de promedio CH1+CH2."""
+        if freqs is None:
+            self.line_tf_avg.set_data([], [])
+            self.line_ph_avg.set_data([], [])
+            return
+        mask = (freqs >= 20) & (freqs <= 20000)
+        f    = freqs[mask]
+        self.line_tf_avg.set_data(f, mag_db_avg[mask])
+        ok = gamma2[mask] >= coh_thresh
+        if ok.sum() > 2:
+            ph_wrap = ((phase_deg_avg[mask][ok] + 180.0) % 360.0) - 180.0
+            self.line_ph_avg.set_data(f[ok], ph_wrap)
+        else:
+            self.line_ph_avg.set_data([], [])
 
     def update_ir_range(self, ms):
         """Cambia el rango visible ±ms/2. El eje siempre es simétrico alrededor de 0."""
@@ -839,10 +878,10 @@ class SpectrumCanvas(FigureCanvas):
             sp.set_color(BORDER)
 
         # Líneas conectadas en frecuencias centrales
-        self.line_x, = self.ax.semilogx([], [], color=BLUE,   lw=1.6, alpha=0.9,
-                                         label='REF')
-        self.line_y, = self.ax.semilogx([], [], color=ORANGE, lw=1.3, alpha=0.85,
-                                         label='MED')
+        self.line_x,     = self.ax.semilogx([], [], color=BLUE,   lw=1.6, alpha=0.9,  label='REF')
+        self.line_y,     = self.ax.semilogx([], [], color=ORANGE, lw=1.3, alpha=0.85, label='CH1')
+        self.line_y2,    = self.ax.semilogx([], [], color=GREEN,  lw=1.2, alpha=0.80, label='CH2', ls='-')
+        self.line_y_avg, = self.ax.semilogx([], [], color=CYAN,   lw=1.5, alpha=0.90, label='AVG', ls='--')
         self._fill_x = self.ax.fill_between([], [], -80, color=BLUE,   alpha=0.08)
         self._fill_y = self.ax.fill_between([], [], -80, color=ORANGE, alpha=0.06)
 
@@ -851,8 +890,8 @@ class SpectrumCanvas(FigureCanvas):
         self._cxh, = self.ax.plot([], [], **_ck)
         self._cyh, = self.ax.plot([], [], **_ck)
 
-        self.ax.legend(fontsize=8, facecolor='#1a1a1a', edgecolor=BORDER,
-                       labelcolor=TEXT_MID, loc='upper right')
+        self.ax.legend(fontsize=7, facecolor='#1a1a1a', edgecolor=BORDER,
+                       labelcolor=TEXT_MID, loc='upper right', ncol=2)
         self.fig.patch.set_facecolor(BG_PANEL)
         self.mpl_connect('motion_notify_event', self._on_mouse_move)
         self.draw()
@@ -914,6 +953,18 @@ class SpectrumCanvas(FigureCanvas):
         self._fill_y = self.ax.fill_between(fc, lev_y, -80, color=ORANGE, alpha=0.06)
 
         self.draw_idle()
+
+    def update_ch2_avg(self, lev_y2, lev_avg):
+        """Actualiza líneas CH2 y AVG del spectrum."""
+        fc = _ISO_CENTERS
+        if lev_y2 is not None:
+            self.line_y2.set_data(fc, lev_y2)
+        else:
+            self.line_y2.set_data([], [])
+        if lev_avg is not None:
+            self.line_y_avg.set_data(fc, lev_avg)
+        else:
+            self.line_y_avg.set_data([], [])
 
     # ── Trazas almacenadas ────────────────────────────────────────────
 
@@ -984,6 +1035,181 @@ class SpectrumCanvas(FigureCanvas):
         self.draw_idle()
 
 
+# ── Canvas de Espectrograma ───────────────────────────────────────────
+
+class SpectrogramCanvas(FigureCanvas):
+    """
+    Espectrograma scrolling: frecuencia (eje Y, log) × tiempo (eje X).
+    Color = nivel en dBFS.  Actualiza solo el array de datos — sin redibujar
+    los ejes en cada frame para mantener fluidez.
+    """
+
+    N_TIME = 180   # columnas de tiempo (frames)
+
+    def __init__(self):
+        self.fig = Figure(facecolor=BG_PANEL)
+        super().__init__(self.fig)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._data  = None
+        self._freqs = None
+        self._img   = None
+        self._built = False
+        self._build()
+
+    def _build(self):
+        self.ax = self.fig.add_subplot(111, facecolor=BG_PLOT)
+        self.fig.subplots_adjust(left=0.08, right=0.97, top=0.95, bottom=0.09)
+        self.ax.set_title('SPECTROGRAM', fontsize=9,
+                          fontfamily='monospace', color=TEXT_MID, loc='left')
+        self.ax.set_xlabel('← tiempo', fontsize=8, color=TEXT_MID)
+        self.ax.set_ylabel('Hz', fontsize=8, color=TEXT_MID)
+        for sp in self.ax.spines.values():
+            sp.set_color(BORDER)
+        self.ax.tick_params(colors=TEXT_MID, labelsize=7)
+        self.fig.patch.set_facecolor(BG_PANEL)
+        self.draw()
+
+    def update_spectrogram(self, freqs, Gxx):
+        """Recibe PSD lineal, convierte a dB, desplaza buffer y redibuja."""
+        mask = (freqs >= 20) & (freqs <= 20000)
+        f    = freqs[mask]
+        col  = 10.0 * np.log10(Gxx[mask] + 1e-12)
+
+        if self._data is None or self._data.shape[0] != len(f):
+            self._data  = np.full((len(f), self.N_TIME), -80.0, dtype=np.float32)
+            self._freqs = f
+            self._img   = None
+            self._built = False
+
+        # Scroll: desplaza columnas a la izquierda, agrega nueva al final
+        self._data = np.roll(self._data, -1, axis=1)
+        self._data[:, -1] = col
+
+        if not self._built or self._img is None:
+            self.ax.cla()
+            self.ax.set_facecolor(BG_PLOT)
+            self.ax.set_title('SPECTROGRAM', fontsize=9,
+                              fontfamily='monospace', color=TEXT_MID, loc='left')
+            self.ax.set_xlabel('← tiempo', fontsize=8, color=TEXT_MID)
+            self.ax.set_ylabel('Hz', fontsize=8, color=TEXT_MID)
+
+            # Construir eje Y con frecuencias reales del FFT
+            self._img = self.ax.imshow(
+                self._data,
+                aspect='auto', origin='lower',
+                extent=[0, self.N_TIME, 0, len(f) - 1],
+                cmap='inferno', vmin=-80, vmax=-10,
+                interpolation='nearest',
+            )
+            # Ticks en frecuencias ISO
+            iso_ticks = [20, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000, 20000]
+            ytick_pos = [float(np.searchsorted(f, ft)) for ft in iso_ticks if ft <= f[-1]]
+            ytick_lbl = [fmt_freq(ft) for ft in iso_ticks if ft <= f[-1]]
+            self.ax.set_yticks(ytick_pos)
+            self.ax.set_yticklabels(ytick_lbl, fontsize=6)
+            self.ax.set_xticks([])
+            for sp in self.ax.spines.values():
+                sp.set_color(BORDER)
+            self.ax.tick_params(colors=TEXT_MID, labelsize=6)
+
+            # Colorbar
+            try:
+                self._cbar = self.fig.colorbar(self._img, ax=self.ax, pad=0.01)
+                self._cbar.ax.tick_params(colors=TEXT_MID, labelsize=6)
+                self._cbar.set_label('dBFS', color=TEXT_MID, fontsize=7)
+            except Exception:
+                pass
+
+            self.fig.subplots_adjust(left=0.08, right=0.88, top=0.95, bottom=0.06)
+            self._built = True
+        else:
+            self._img.set_data(self._data)
+
+        self.draw_idle()
+
+    def clear(self):
+        self._data  = None
+        self._img   = None
+        self._built = False
+        self.ax.cla()
+        self.draw_idle()
+
+
+# ── Diálogo de configuración de medición ──────────────────────────────
+
+class MeasurementConfigDialog(QDialog):
+    """
+    Parámetros de medición: FFT size, sample rate, overlap.
+    Se abre desde Config → Measurement Config o Ctrl+M.
+    """
+
+    _FFT_OPTS = [
+        ('1024  — Δf ≈ 47 Hz  (rápido)',   1024),
+        ('2048  — Δf ≈ 23 Hz',             2048),
+        ('4096  — Δf ≈ 12 Hz  (default)',  4096),
+        ('8192  — Δf ≈ 6 Hz   (preciso)',  8192),
+        ('16384 — Δf ≈ 3 Hz   (lento)',   16384),
+    ]
+    _FS_OPTS  = [44100, 48000, 96000]
+    _OVL_OPTS = [0, 50, 75]
+
+    def __init__(self, engine, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Measurement Config')
+        self.setModal(True)
+        self.setFixedSize(340, 200)
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setSpacing(6)
+
+        self.cmb_fft = QComboBox()
+        self._fft_vals = []
+        for label, val in self._FFT_OPTS:
+            self.cmb_fft.addItem(label)
+            self._fft_vals.append(val)
+        try:
+            self.cmb_fft.setCurrentIndex(self._fft_vals.index(engine.nperseg))
+        except ValueError:
+            self.cmb_fft.setCurrentIndex(2)
+        form.addRow('FFT Size:', self.cmb_fft)
+
+        self.cmb_fs = QComboBox()
+        for fs in self._FS_OPTS:
+            self.cmb_fs.addItem(f'{fs} Hz')
+        self.cmb_fs.setCurrentIndex(self._FS_OPTS.index(engine.fs)
+                                    if engine.fs in self._FS_OPTS else 1)
+        form.addRow('Sample Rate:', self.cmb_fs)
+
+        self.cmb_ovl = QComboBox()
+        for o in self._OVL_OPTS:
+            self.cmb_ovl.addItem(f'{o}%')
+        form.addRow('Overlap:', self.cmb_ovl)
+
+        lay.addLayout(form)
+        lay.addStretch()
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def values(self):
+        return {
+            'nperseg': self._fft_vals[self.cmb_fft.currentIndex()],
+            'fs':      self._FS_OPTS[self.cmb_fs.currentIndex()],
+            'overlap': self._OVL_OPTS[self.cmb_ovl.currentIndex()],
+        }
+
+
 # ── Ventana principal ─────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
@@ -997,13 +1223,18 @@ class MainWindow(QMainWindow):
         self._delay_comp_ms   = 0.0    # retardo compensado (delay finder → fase)
         self._traces: List[TraceData] = []
         self._trace_color_idx = 0      # cicla por TRACE_PALETTE
+        self._mic_cal         = None   # tuple (freqs, dB_correction) o None
+        self._mic_cal_name    = ''     # nombre del archivo cargado
+        self._show_ch2        = True   # mostrar 2do canal en gráficas
+        self._show_avg        = True   # mostrar promedio
 
-        self.setWindowTitle('Coherence  v0.1')
+        self.setWindowTitle('Coherence  v0.2')
         self.setMinimumSize(1100, 720)
         self.resize(1380, 820)
         self.setStyleSheet(QSS)
 
         self._build_central()
+        self._build_menubar()
         self._build_statusbar()
         self._populate_devices()
 
@@ -1038,8 +1269,10 @@ class MainWindow(QMainWindow):
         self.canvas_meas.on_cursor_update = self._update_cursor
         self.canvas_spec = SpectrumCanvas()
         self.canvas_spec.on_cursor_update = self._update_cursor
-        self.tabs.addTab(self.canvas_meas, 'MEASUREMENT')
-        self.tabs.addTab(self.canvas_spec, 'SPECTRUM')
+        self.canvas_sgram = SpectrogramCanvas()
+        self.tabs.addTab(self.canvas_meas,  'TRANSFER FUNCTION')
+        self.tabs.addTab(self.canvas_spec,  'SPECTRUM')
+        self.tabs.addTab(self.canvas_sgram, 'SPECTROGRAM')
         cv.addWidget(self.tabs, stretch=1)
         root.addWidget(center, stretch=1)
 
@@ -1054,7 +1287,7 @@ class MainWindow(QMainWindow):
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
 
-        self.lbl_app_title = QLabel('  COHERENCE  v0.1  ')
+        self.lbl_app_title = QLabel('  COHERENCE  v0.2  ')
         self.lbl_app_title.setObjectName('lbl_app_title')
         h.addWidget(self.lbl_app_title)
 
@@ -1327,19 +1560,41 @@ class MainWindow(QMainWindow):
         self.cmb_dev_out = QComboBox()
         gr.addWidget(self.cmb_dev_out, 1, 1)
 
-        gr.addWidget(lbl('CH MED'), 2, 0)
+        gr.addWidget(lbl('CH MED 1'), 2, 0)
         self.spn_ch_meas = QSpinBox()
         self.spn_ch_meas.setRange(1, 20)
         self.spn_ch_meas.setValue(1)
         self.spn_ch_meas.valueChanged.connect(self._on_channels)
         gr.addWidget(self.spn_ch_meas, 2, 1)
 
-        gr.addWidget(lbl('CH REF'), 3, 0)
+        gr.addWidget(lbl('CH MED 2'), 3, 0)
+        self.spn_ch_meas2 = QSpinBox()
+        self.spn_ch_meas2.setRange(1, 20)
+        self.spn_ch_meas2.setValue(2)
+        self.spn_ch_meas2.valueChanged.connect(self._on_channels)
+        gr.addWidget(self.spn_ch_meas2, 3, 1)
+
+        gr.addWidget(lbl('CH REF'), 4, 0)
         self.spn_ch_ref = QSpinBox()
         self.spn_ch_ref.setRange(1, 20)
         self.spn_ch_ref.setValue(4)
         self.spn_ch_ref.valueChanged.connect(self._on_channels)
-        gr.addWidget(self.spn_ch_ref, 3, 1)
+        gr.addWidget(self.spn_ch_ref, 4, 1)
+
+        # CH2 / AVG toggles
+        row_ch2 = QHBoxLayout()
+        row_ch2.setSpacing(3)
+        self.chk_ch2 = QCheckBox('CH2')
+        self.chk_ch2.setChecked(True)
+        self.chk_ch2.stateChanged.connect(
+            lambda s: setattr(self, '_show_ch2', bool(s)))
+        self.chk_avg = QCheckBox('AVG')
+        self.chk_avg.setChecked(True)
+        self.chk_avg.stateChanged.connect(
+            lambda s: setattr(self, '_show_avg', bool(s)))
+        row_ch2.addWidget(self.chk_ch2)
+        row_ch2.addWidget(self.chk_avg)
+        gr.addLayout(row_ch2, 5, 0, 1, 2)
         layout.addWidget(grp_rt)
 
         # ════════════════════════════════════════
@@ -1490,10 +1745,78 @@ class MainWindow(QMainWindow):
 
         return panel
 
+    def _build_menubar(self):
+        mb_style = f"""
+            QMenuBar {{
+                background:{BG_TOOLBAR}; color:{TEXT_MID};
+                font-size:11px; padding:1px 4px;
+                border-bottom:1px solid {BORDER};
+            }}
+            QMenuBar::item {{ padding:3px 10px; border-radius:2px; }}
+            QMenuBar::item:selected {{ background:{ACCENT}; color:#000; }}
+            QMenu {{
+                background:{BG_PANEL}; color:{TEXT_HI};
+                border:1px solid {BORDER}; font-size:11px;
+            }}
+            QMenu::item {{ padding:4px 22px 4px 14px; }}
+            QMenu::item:selected {{ background:{ACCENT}; color:#000; }}
+            QMenu::separator {{ background:{BORDER}; height:1px; margin:3px 0; }}
+        """
+        mb = self.menuBar()
+        mb.setStyleSheet(mb_style)
+
+        # ── FILE ─────────────────────────────────────────────────────
+        fm = mb.addMenu('File')
+        fm.addAction('Save IR…',       self._save_ir_txt).setShortcut('Ctrl+Shift+I')
+        fm.addAction('Save TF…',       self._save_tf_txt).setShortcut('Ctrl+Shift+T')
+        fm.addAction('Save Phase…',    self._save_ph_txt).setShortcut('Ctrl+Shift+P')
+        fm.addAction('Save Spectrum…', self._save_sp_txt).setShortcut('Ctrl+Shift+S')
+        fm.addSeparator()
+        fm.addAction('Save Graph (PNG)…', self._save_graph_png).setShortcut('Ctrl+G')
+        fm.addSeparator()
+        fm.addAction('Load Mic Calibration…', self._load_mic_cal).setShortcut('Ctrl+K')
+        fm.addAction('Clear Mic Calibration', self._clear_mic_cal)
+        fm.addSeparator()
+        fm.addAction('Quit', self.close).setShortcut('Ctrl+Q')
+
+        # ── CONFIG ───────────────────────────────────────────────────
+        cm = mb.addMenu('Config')
+        cm.addAction('Measurement Config…', self._show_meas_config).setShortcut('Ctrl+M')
+        cm.addAction('Mic Calibration…',    self._load_mic_cal).setShortcut('Ctrl+K')
+
+        # ── VIEW ─────────────────────────────────────────────────────
+        vm = mb.addMenu('View')
+        vm.addAction('Transfer Function  [T]',
+                     lambda: self.tabs.setCurrentIndex(0)).setShortcut('T')
+        vm.addAction('Spectrum  [S]',
+                     lambda: self.tabs.setCurrentIndex(1)).setShortcut('S')
+        vm.addAction('Spectrogram  [E]',
+                     lambda: self.tabs.setCurrentIndex(2)).setShortcut('E')
+        vm.addSeparator()
+        vm.addAction('Toggle Settings Panel', self._on_toggle_settings).setShortcut('Ctrl+Right')
+        vm.addAction('Toggle Save Panel',     self._on_toggle_save).setShortcut('Ctrl+Left')
+
+        # ── COMMAND ──────────────────────────────────────────────────
+        xm = mb.addMenu('Command')
+        xm.addAction('Start  [Space]', self._on_start).setShortcut('Space')
+        xm.addAction('Stop',           self._on_stop)
+        xm.addSeparator()
+        xm.addAction('Find Delay  [D]',   self._on_find_delay).setShortcut('D')
+        xm.addAction('Reset Delay  [R]',  self._on_delay_reset).setShortcut('R')
+        xm.addAction('Freeze  [F]',       lambda: self.btn_freeze_p.click()).setShortcut('F')
+        xm.addSeparator()
+        xm.addAction('Save Trace  [P]',   self._save_trace).setShortcut('P')
+        xm.addAction('Toggle Noise  [G]', lambda: self.btn_noise_p.click()).setShortcut('G')
+
+        # ── HELP ─────────────────────────────────────────────────────
+        hm = mb.addMenu('Help')
+        hm.addAction('Keyboard Shortcuts', self._show_shortcuts)
+        hm.addAction('About Coherence…',   self._show_about)
+
     def _build_statusbar(self):
         self.sb = QStatusBar()
         self.setStatusBar(self.sb)
-        self.sb.showMessage('Coherence v0.1  —  GPL v3')
+        self.sb.showMessage('Coherence v0.2  —  GPL v3')
 
     # ── Populate devices ──────────────────────────────────────────────
 
@@ -1545,8 +1868,9 @@ class MainWindow(QMainWindow):
 
 
     def _on_channels(self):
-        self.engine.ch_meas = self.spn_ch_meas.value()
-        self.engine.ch_ref  = self.spn_ch_ref.value()
+        self.engine.ch_meas  = self.spn_ch_meas.value()
+        self.engine.ch_meas2 = self.spn_ch_meas2.value()
+        self.engine.ch_ref   = self.spn_ch_ref.value()
         if self.engine.running:
             self.engine.restart()
 
@@ -1663,35 +1987,83 @@ class MainWindow(QMainWindow):
 
         smooth_idx  = self.cmb_smooth.currentIndex()
         smooth_frac = self._smooth_values[smooth_idx]
+        delay_s     = self._delay_comp_ms / 1000.0
+        eps         = 1e-12
+
         freqs, gamma2, mag_db, phase_deg, gxx_db, gyy_db = compute_analysis(
             x, y,
-            nperseg        = self.engine.nperseg,
-            fs             = self.engine.fs,
-            smooth_fraction= smooth_frac,
-            delay_comp_s   = self._delay_comp_ms / 1000.0,
+            nperseg         = self.engine.nperseg,
+            fs              = self.engine.fs,
+            smooth_fraction = smooth_frac,
+            delay_comp_s    = delay_s,
         )
 
-        # Impulse Response via IFFT de H(f)  +  potencia lineal para CPB
-        eps = 1e-12
+        # ── Aplicar calibración de micrófono (si existe) ──────────────
+        if self._mic_cal is not None:
+            cal_f, cal_db = self._mic_cal
+            correction = np.interp(freqs, cal_f, cal_db, left=0.0, right=0.0)
+            mag_db = mag_db - correction   # restar corrección a la TF
+
+        # ── 2do canal ────────────────────────────────────────────────
+        y2 = self.engine.get_buffer_meas2()
+        freqs2, gamma2_2, mag_db2, phase_deg2, _, _ = compute_analysis(
+            x, y2,
+            nperseg         = self.engine.nperseg,
+            fs              = self.engine.fs,
+            smooth_fraction = smooth_frac,
+            delay_comp_s    = delay_s,
+        )
+        if self._mic_cal is not None:
+            correction2 = np.interp(freqs2, cal_f, cal_db, left=0.0, right=0.0)
+            mag_db2 = mag_db2 - correction2
+
+        # ── Promedio TF (dominio lineal) ─────────────────────────────
+        H1_lin   = 10.0 ** (mag_db  / 20.0)
+        H2_lin   = 10.0 ** (mag_db2 / 20.0)
+        mag_avg  = 20.0 * np.log10((H1_lin + H2_lin) / 2.0 + eps)
+        ph_avg   = (phase_deg + phase_deg2) / 2.0
+        g2_avg   = (gamma2 + gamma2_2) / 2.0
+
+        # ── IR via IFFT + PSD para CPB ────────────────────────────────
         _, Gxx, Gyy_raw, Gxy = welch_spectra(
             x, y, nperseg=self.engine.nperseg, fs=self.engine.fs
+        )
+        _, _,   Gyy2_raw, _  = welch_spectra(
+            x, y2, nperseg=self.engine.nperseg, fs=self.engine.fs
         )
         H  = Gxy / (Gxx + eps)
         ir = np.fft.irfft(H)
         ir = ir / (np.max(np.abs(ir)) + eps)
 
-        mask = (freqs >= 20) & (freqs <= 20000)
+        mask    = (freqs >= 20) & (freqs <= 20000)
         avg_coh = float(np.mean(gamma2[mask]))
         thresh  = self.spn_thresh.value()
 
-        # Update canvases
+        # ── Update canvases según tab activo ──────────────────────────
         tab = self.tabs.currentIndex()
         if tab == 0:
             self.canvas_meas.update_plots(freqs, gamma2, mag_db, phase_deg,
-                                     gxx_db, ir, coh_thresh=thresh)
-        else:
-            # Spectrum: pasar potencia lineal → CPB 1/3-oct dentro del canvas
+                                          gxx_db, ir, coh_thresh=thresh)
+            if self._show_ch2:
+                self.canvas_meas.update_ch2(freqs2, mag_db2, phase_deg2,
+                                            gamma2_2, coh_thresh=thresh)
+            else:
+                self.canvas_meas.update_ch2(None, None, None, None)
+            if self._show_avg:
+                self.canvas_meas.update_avg(freqs, mag_avg, ph_avg,
+                                            g2_avg, coh_thresh=thresh)
+            else:
+                self.canvas_meas.update_avg(None, None, None, None)
+
+        elif tab == 1:
             self.canvas_spec.update_plots(freqs, Gxx, Gyy_raw)
+            lev_y2  = SpectrumCanvas._cpb(freqs2, Gyy2_raw) if self._show_ch2 else None
+            lev_avg = (SpectrumCanvas._cpb(freqs, Gyy_raw) +
+                       SpectrumCanvas._cpb(freqs2, Gyy2_raw)) / 2.0 if self._show_avg else None
+            self.canvas_spec.update_ch2_avg(lev_y2, lev_avg)
+
+        elif tab == 2:
+            self.canvas_sgram.update_spectrogram(freqs, Gxx)
 
         # Toolbar live
         mark  = '✓  GOOD' if avg_coh > 0.9 else ('~  OK' if avg_coh > 0.7 else '⚠  LOW')
@@ -1790,6 +2162,112 @@ class MainWindow(QMainWindow):
         self._save_txt(self._default_path('SP'),
                        ['freq_hz', 'ref_dbfs', 'meas_dbfs'],
                        [freqs2[m2], gxx_db[m2], gyy_db[m2]])
+
+    # ── Calibración de micrófono ──────────────────────────────────────
+
+    def _load_mic_cal(self):
+        """Carga archivo .txt con columnas freq_hz / correction_dB."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Cargar calibración de micrófono',
+            os.path.expanduser('~'),
+            'Text files (*.txt);;CSV (*.csv);;All files (*)'
+        )
+        if not path:
+            return
+        try:
+            data = np.loadtxt(path, comments='#')
+            if data.ndim != 2 or data.shape[1] < 2:
+                raise ValueError('El archivo debe tener 2 columnas: freq_hz  correction_dB')
+            self._mic_cal      = (data[:, 0], data[:, 1])
+            self._mic_cal_name = os.path.basename(path)
+            self.sb.showMessage(
+                f'✓  Mic cal cargada: {self._mic_cal_name}  '
+                f'({len(data)} puntos, '
+                f'{data[0,0]:.0f}–{data[-1,0]:.0f} Hz)', 6000)
+        except Exception as e:
+            QMessageBox.critical(self, 'Error al cargar calibración', str(e))
+
+    def _clear_mic_cal(self):
+        self._mic_cal      = None
+        self._mic_cal_name = ''
+        self.sb.showMessage('Calibración de micrófono eliminada', 3000)
+
+    # ── Measurement Config ────────────────────────────────────────────
+
+    def _show_meas_config(self):
+        dlg = MeasurementConfigDialog(self.engine, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            vals = dlg.values()
+            was  = self.engine.running
+            if was:
+                self.engine.stop()
+                self.timer.stop()
+            self.engine.nperseg = vals['nperseg']
+            self.engine.fs      = vals['fs']
+            self.sb.showMessage(
+                f"Config: FFT={vals['nperseg']}  fs={vals['fs']} Hz  "
+                f"Δf={vals['fs']/vals['nperseg']:.1f} Hz/bin", 5000)
+            if was:
+                try:
+                    self.engine.start()
+                    self.timer.start()
+                except Exception as exc:
+                    self.sb.showMessage(f'⚠  {exc}', 6000)
+
+    # ── Guardar gráfica PNG ───────────────────────────────────────────
+
+    def _save_graph_png(self):
+        tab = self.tabs.currentIndex()
+        canvas_map = {
+            0: (self.canvas_meas,  'TF_Phase_IR'),
+            1: (self.canvas_spec,  'Spectrum'),
+            2: (self.canvas_sgram, 'Spectrogram'),
+        }
+        canvas, name = canvas_map.get(tab, (self.canvas_meas, 'graph'))
+        ts   = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        path = os.path.join(os.path.expanduser('~/Desktop'),
+                            f'coherence_{name}_{ts}.png')
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Guardar gráfica', path, 'PNG (*.png);;PDF (*.pdf)')
+        if not path:
+            return
+        canvas.fig.savefig(path, dpi=150, facecolor=BG_PANEL,
+                           bbox_inches='tight')
+        self.sb.showMessage(f'Gráfica guardada: {os.path.basename(path)}', 4000)
+
+    # ── About / Shortcuts ─────────────────────────────────────────────
+
+    def _show_about(self):
+        QMessageBox.about(self, 'Coherence v0.2',
+            '<b>Coherence v0.2</b><br>'
+            'Analizador de audio en tiempo real<br>'
+            'Alternativa libre a SMAART<br><br>'
+            'GPL v3 — github.com/JorgeChiles/coherence<br>'
+            '<small>Jorge Peña (JorgeChiles) © 2024</small>'
+        )
+
+    def _show_shortcuts(self):
+        msg = (
+            '<b>Keyboard Shortcuts</b><br><br>'
+            '<b>Navigation</b><br>'
+            'T — Transfer Function tab<br>'
+            'S — Spectrum tab<br>'
+            'E — Spectrogram tab<br><br>'
+            '<b>Transport</b><br>'
+            'Space — Start<br>'
+            'G — Toggle Noise Generator<br>'
+            'F — Freeze<br><br>'
+            '<b>Analysis</b><br>'
+            'D — Find Delay<br>'
+            'R — Reset Delay<br>'
+            'P — Save Trace<br><br>'
+            '<b>File</b><br>'
+            'Ctrl+G — Save Graph PNG<br>'
+            'Ctrl+K — Load Mic Calibration<br>'
+            'Ctrl+M — Measurement Config<br>'
+            'Ctrl+Q — Quit'
+        )
+        QMessageBox.information(self, 'Shortcuts', msg)
 
     # ── Overlay de trazas ─────────────────────────────────────────────
 
