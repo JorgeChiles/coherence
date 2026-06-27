@@ -7,9 +7,32 @@ y engine de captura/reproducción con sounddevice.
 Generadores disponibles: pink, white, tone, sweep
 """
 
+import os
+import contextlib
 import numpy as np
 import threading
 import sounddevice as sd
+
+
+@contextlib.contextmanager
+def _suppress_pa_stderr():
+    """
+    Suprime el ruido de PortAudio/CoreAudio en stderr (macOS).
+    El error 'PaMacCore (AUHAL)... Unspecified Audio Hardware Error'
+    es benigno — PortAudio lo imprime al escanear dispositivos.
+    """
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        old_stderr = os.dup(2)
+        os.dup2(devnull_fd, 2)
+        try:
+            yield
+        finally:
+            os.dup2(old_stderr, 2)
+            os.close(old_stderr)
+            os.close(devnull_fd)
+    except Exception:
+        yield   # si falla el redirect, no importa
 
 
 # ── Buffer circular (write-pointer, sin np.roll) ──────────────────────
@@ -155,9 +178,21 @@ class AudioEngine:
     Parámetros
     ----------
     fs          : frecuencia de muestreo (Hz)
-    blocksize   : muestras por bloque de callback  (2048 → ~42 ms → tolerante a GIL)
+    blocksize   : muestras por bloque de callback  (2048 → ~42 ms)
     nperseg     : ventana Welch
     n_averages  : ventanas a promediar (máx 32 sin reiniciar)
+
+    Multi-canal de medición
+    -----------------------
+    _ch_meas_list  : lista de canales de medición (1-indexed).
+    buf_meas_list  : lista de CircularBuffer correspondiente a cada canal.
+    ch_spl         : canal dedicado para el medidor SPL (1-indexed).
+    buf_spl        : CircularBuffer del canal SPL.
+
+    Compatibilidad hacia atrás
+    --------------------------
+    Las propiedades ch_meas y ch_meas2 siguen funcionando para no romper
+    el código existente mientras se migra.
     """
 
     SIGNAL_TYPES = ('pink', 'white', 'tone', 'sweep')
@@ -168,13 +203,28 @@ class AudioEngine:
         self.nperseg    = nperseg
         self.n_averages = n_averages
 
-        # Buffer pre-dimensionado para hasta 32 averages + 2 de margen
         buf_size = nperseg * 34
-        self.buf_ref   = CircularBuffer(buf_size)
-        self.buf_meas  = CircularBuffer(buf_size)
-        self.buf_meas2 = CircularBuffer(buf_size)
 
-        # Generadores (inicializados una vez, no en el callback)
+        # Buffer de referencia (único)
+        self.buf_ref  = CircularBuffer(buf_size)
+
+        # Buffers multi-canal de medición (dinámicos)
+        self._ch_meas_list : list[int]           = [1, 2]   # canales 1-indexed
+        self.buf_meas_list : list[CircularBuffer] = [
+            CircularBuffer(buf_size),
+            CircularBuffer(buf_size),
+        ]
+
+        # Buffer y canal SPL dedicado
+        self.ch_spl  : int           = 1
+        self.buf_spl : CircularBuffer = CircularBuffer(buf_size)
+
+        # Buffers spectrum multi-canal
+        _buf_spec0               = CircularBuffer(buf_size)
+        self._ch_spec_list : list[int]           = [1]    # canales 1-indexed
+        self.buf_spec_list : list[CircularBuffer] = [_buf_spec0]
+
+        # Generadores
         self._generators = {
             'pink':  PinkNoiseGenerator(fs=fs),
             'white': WhiteNoiseGenerator(fs=fs),
@@ -185,15 +235,138 @@ class AudioEngine:
 
         # Parámetros controlables desde GUI
         self.gain     = 0.3
-        self.noise_on = True
-        self.ch_meas  = 1       # 1-indexed
-        self.ch_meas2 = 2       # 2do canal de medición
-        self.ch_ref   = 4       # 1-indexed
-        self.dev_in   = 2
-        self.dev_out  = 2
+        self.noise_on = False   # generador OFF al arrancar — se activa desde Signal Generator
+        self.ch_ref   = 2       # canal de referencia (1-indexed)
+
+        # Dispositivos: usar los defaults del sistema, no IDs hardcodeados
+        with _suppress_pa_stderr():
+            try:
+                _def_in, _def_out = sd.default.device
+                self.dev_in  = int(_def_in)  if (_def_in  is not None and _def_in  >= 0) else 0
+                self.dev_out = int(_def_out) if (_def_out is not None and _def_out >= 0) else 0
+            except Exception:
+                self.dev_in  = 0
+                self.dev_out = 0
 
         self._stream  = None
         self._running = False
+
+    # ── Compatibilidad hacia atrás — spectrum ─────────────────────────
+
+    @property
+    def ch_spec(self) -> int:
+        """Canal spectrum primario (backward compat)."""
+        return self._ch_spec_list[0] if self._ch_spec_list else 1
+
+    @ch_spec.setter
+    def ch_spec(self, v: int):
+        if self._ch_spec_list:
+            self._ch_spec_list[0] = int(v)
+        else:
+            self._ch_spec_list = [int(v)]
+
+    @property
+    def buf_spec(self) -> 'CircularBuffer':
+        """Buffer spectrum primario (backward compat)."""
+        return self.buf_spec_list[0]
+
+    # ── Compatibilidad hacia atrás ────────────────────────────────────
+
+    @property
+    def ch_meas(self) -> int:
+        """Canal de medición primario (TF1)."""
+        return self._ch_meas_list[0] if self._ch_meas_list else 1
+
+    @ch_meas.setter
+    def ch_meas(self, v: int):
+        if self._ch_meas_list:
+            self._ch_meas_list[0] = int(v)
+        else:
+            self._ch_meas_list = [int(v)]
+
+    @property
+    def ch_meas2(self) -> int:
+        """Canal de medición secundario (TF2)."""
+        return self._ch_meas_list[1] if len(self._ch_meas_list) > 1 else 2
+
+    @ch_meas2.setter
+    def ch_meas2(self, v: int):
+        if len(self._ch_meas_list) > 1:
+            self._ch_meas_list[1] = int(v)
+        else:
+            while len(self._ch_meas_list) < 2:
+                self._ch_meas_list.append(int(v))
+                buf_size = self.nperseg * 34
+                self.buf_meas_list.append(CircularBuffer(buf_size))
+            self._ch_meas_list[1] = int(v)
+
+    @property
+    def buf_meas(self) -> CircularBuffer:
+        """Buffer de medición primario (TF1)."""
+        return self.buf_meas_list[0]
+
+    @property
+    def buf_meas2(self) -> CircularBuffer:
+        """Buffer de medición secundario (TF2)."""
+        return self.buf_meas_list[1] if len(self.buf_meas_list) > 1 else self.buf_meas_list[0]
+
+    # ── Gestión dinámica de canales de medición ───────────────────────
+
+    def add_meas_channel(self, ch: int) -> int:
+        """
+        Agrega un canal de medición.
+        Retorna el índice (0-based) del nuevo canal en la lista.
+        """
+        buf_size = self.nperseg * 34
+        self._ch_meas_list.append(int(ch))
+        self.buf_meas_list.append(CircularBuffer(buf_size))
+        return len(self._ch_meas_list) - 1
+
+    def remove_meas_channel(self, idx: int):
+        """
+        Elimina el canal de medición en la posición idx.
+        Mínimo 1 canal queda siempre.
+        """
+        if len(self._ch_meas_list) <= 1:
+            return
+        del self._ch_meas_list[idx]
+        del self.buf_meas_list[idx]
+
+    def get_buffer_meas(self, idx: int = 0):
+        """
+        Retorna nperseg * n_averages muestras del canal de medición idx.
+        Si idx está fuera de rango retorna el canal 0.
+        """
+        n = self.nperseg * self.n_averages
+        safe_idx = min(idx, len(self.buf_meas_list) - 1)
+        return self.buf_meas_list[safe_idx].read(n)
+
+    # ── Gestión dinámica de canales spectrum ──────────────────────────
+
+    def add_spec_channel(self, ch: int) -> int:
+        """Agrega un canal spectrum. Retorna el índice (0-based)."""
+        buf_size = self.nperseg * 34
+        self._ch_spec_list.append(int(ch))
+        self.buf_spec_list.append(CircularBuffer(buf_size))
+        return len(self._ch_spec_list) - 1
+
+    def remove_spec_channel(self, idx: int):
+        """Elimina el canal spectrum idx. El índice 0 no se puede eliminar."""
+        if idx == 0 or len(self._ch_spec_list) <= 1:
+            return
+        del self._ch_spec_list[idx]
+        del self.buf_spec_list[idx]
+
+    def get_buffer_spec(self, idx: int = 0):
+        """Retorna nperseg * n_averages muestras del canal spectrum idx."""
+        n        = self.nperseg * self.n_averages
+        safe_idx = min(idx, len(self.buf_spec_list) - 1)
+        return self.buf_spec_list[safe_idx].read(n)
+
+    def get_buffer_spl(self):
+        """Retorna nperseg * n_averages muestras del canal SPL."""
+        n = self.nperseg * self.n_averages
+        return self.buf_spl.read(n)
 
     # ── Frecuencia del tono ───────────────────────────────────────────
 
@@ -214,14 +387,22 @@ class AudioEngine:
         Solo slice-assignments de numpy — sin allocs, sin locks en write.
         """
         try:
-            n_in      = indata.shape[1]
-            ref_idx   = min(self.ch_ref   - 1, n_in - 1)
-            meas_idx  = min(self.ch_meas  - 1, n_in - 1)
-            meas2_idx = min(self.ch_meas2 - 1, n_in - 1)
+            n_in    = indata.shape[1]
+            ref_idx = min(self.ch_ref  - 1, n_in - 1)
+            spl_idx = min(self.ch_spl  - 1, n_in - 1)
 
-            self.buf_ref.write(  indata[:, ref_idx])
-            self.buf_meas.write( indata[:, meas_idx])
-            self.buf_meas2.write(indata[:, meas2_idx])
+            self.buf_ref.write(indata[:, ref_idx])
+            self.buf_spl.write(indata[:, spl_idx])
+
+            # Todos los canales spectrum
+            for sp_buf, sp_ch in zip(self.buf_spec_list, self._ch_spec_list):
+                sp_idx = min(sp_ch - 1, n_in - 1)
+                sp_buf.write(indata[:, sp_idx])
+
+            # Todos los canales de medición
+            for buf, ch in zip(self.buf_meas_list, self._ch_meas_list):
+                idx = min(ch - 1, n_in - 1)
+                buf.write(indata[:, idx])
 
             if self.noise_on:
                 gen   = self._generators.get(self.signal_type,
@@ -234,56 +415,161 @@ class AudioEngine:
                 outdata[:, ch] = noise
 
         except Exception:
-            outdata.fill(0)   # silencio en caso de error; nunca dejar outdata sin inicializar
+            outdata.fill(0)
 
     # ── Control del stream ────────────────────────────────────────────
+
+    # Sample rates to try in order of preference
+    _FS_CANDIDATES = [48000, 44100, 96000, 88200, 32000, 22050]
+
+    def _negotiate_fs(self, n_in, n_out):
+        """
+        Encuentra la primera sample rate que funcione.
+        Si n_out == 0, solo verifica la entrada (stream input-only).
+        """
+        candidates = [self.fs] + [f for f in self._FS_CANDIDATES if f != self.fs]
+        info_in  = sd.query_devices(self.dev_in)
+        for fs_default in [int(info_in['default_samplerate'])]:
+            if fs_default not in candidates:
+                candidates.append(fs_default)
+        if n_out > 0:
+            info_out = sd.query_devices(self.dev_out)
+            for fs_default in [int(info_out['default_samplerate'])]:
+                if fs_default not in candidates:
+                    candidates.append(fs_default)
+
+        last_err = None
+        for fs in candidates:
+            try:
+                sd.check_input_settings(device=self.dev_in, channels=n_in, samplerate=fs)
+                if n_out > 0:
+                    sd.check_output_settings(device=self.dev_out, channels=n_out,
+                                             samplerate=fs)
+                return fs
+            except sd.PortAudioError as e:
+                last_err = e
+
+        raise RuntimeError(
+            f"Ninguna sample rate compatible para "
+            f"IN '{sd.query_devices(self.dev_in)['name']}'"
+            + (f" y OUT '{sd.query_devices(self.dev_out)['name']}'" if n_out > 0 else '')
+            + f". Último error: {last_err}"
+        )
+
+    def _callback_input_only(self, indata, frames, time, status):
+        """Callback para stream sin salida (dispositivo solo-captura)."""
+        try:
+            n_in    = indata.shape[1]
+            ref_idx = min(self.ch_ref  - 1, n_in - 1)
+            spl_idx = min(self.ch_spl  - 1, n_in - 1)
+
+            self.buf_ref.write(indata[:, ref_idx])
+            self.buf_spl.write(indata[:, spl_idx])
+
+            for sp_buf, sp_ch in zip(self.buf_spec_list, self._ch_spec_list):
+                sp_buf.write(indata[:, min(sp_ch - 1, n_in - 1)])
+
+            for buf, ch in zip(self.buf_meas_list, self._ch_meas_list):
+                buf.write(indata[:, min(ch - 1, n_in - 1)])
+
+        except Exception:
+            pass
 
     def start(self):
         if self._running:
             return
 
-        # ── Consultar límites reales del dispositivo ───────────────────
-        info_in  = sd.query_devices(self.dev_in)
-        info_out = sd.query_devices(self.dev_out)
+        # Verificar que los dispositivos guardados siguen existiendo;
+        # si no, caer al default del sistema para no crashear.
+        n_devs = len(sd.query_devices())
+        if self.dev_in >= n_devs or self.dev_in < 0:
+            try:
+                self.dev_in = int(sd.default.device[0])
+            except Exception:
+                self.dev_in = 0
+        if self.dev_out >= n_devs or self.dev_out < 0:
+            try:
+                self.dev_out = int(sd.default.device[1])
+            except Exception:
+                self.dev_out = 0
+
+        with _suppress_pa_stderr():
+            info_in  = sd.query_devices(self.dev_in)
+            info_out = sd.query_devices(self.dev_out)
 
         max_in  = int(info_in['max_input_channels'])
         max_out = int(info_out['max_output_channels'])
 
+        # macOS / CoreAudio a veces reporta max_input_channels = 0 en interfaces
+        # que sí tienen entrada (bug del driver). Pero hay dispositivos que
+        # genuinamente no tienen input (monitores LG, altavoces, etc.).
+        # → Probar con 1 canal antes de asumir que el reporte es incorrecto.
         if max_in < 1:
-            raise RuntimeError(
-                f"Dispositivo entrada [{self.dev_in}] '{info_in['name']}' "
-                f"no tiene canales de entrada.")
+            _probe_ok = False
+            with _suppress_pa_stderr():
+                try:
+                    sd.check_input_settings(
+                        device=self.dev_in, channels=1,
+                        samplerate=float(info_in['default_samplerate'])
+                    )
+                    _probe_ok = True
+                except Exception:
+                    pass
+
+            if _probe_ok:
+                # Interfaz que reporta mal — usarla igualmente
+                max_in = 2
+            else:
+                # Dispositivo sin inputs reales (monitor, altavoz USB, etc.)
+                # Intentar reutilizar dev_out como entrada si tiene canales
+                _out_max_in = int(info_out.get('max_input_channels', 0))
+                if _out_max_in > 0:
+                    self.dev_in = self.dev_out
+                    info_in     = info_out
+                    max_in      = _out_max_in
+                else:
+                    # Último recurso: default del sistema
+                    try:
+                        self.dev_in = int(sd.default.device[0])
+                        with _suppress_pa_stderr():
+                            info_in = sd.query_devices(self.dev_in)
+                        max_in = max(int(info_in['max_input_channels']), 1)
+                    except Exception:
+                        self.dev_in = 0
+                        max_in = 2
+
+        # Calcular canales de entrada necesarios
+        all_ch = self._ch_meas_list + self._ch_spec_list + [self.ch_ref, self.ch_spl]
+        n_in   = min(max(all_ch), max_in)
+
+        # Si el dispositivo de salida no tiene canales (ej. micrófono built-in)
+        # → abrir stream solo-captura, sin generador de señal
         if max_out < 1:
-            raise RuntimeError(
-                f"Dispositivo salida [{self.dev_out}] '{info_out['name']}' "
-                f"no tiene canales de salida.")
+            fs_use = self._negotiate_fs(n_in, n_out=0)
+            self.fs = fs_use
+            self._stream = sd.InputStream(
+                samplerate = fs_use,
+                blocksize  = self.blocksize,
+                device     = self.dev_in,
+                channels   = n_in,
+                dtype      = 'float32',
+                callback   = self._callback_input_only,
+                latency    = 'low',
+            )
+        else:
+            n_out  = min(2, max_out)
+            fs_use = self._negotiate_fs(n_in, n_out)
+            self.fs = fs_use
+            self._stream = sd.Stream(
+                samplerate = fs_use,
+                blocksize  = self.blocksize,
+                device     = (self.dev_in, self.dev_out),
+                channels   = (n_in, n_out),
+                dtype      = 'float32',
+                callback   = self._callback,
+                latency    = 'low',
+            )
 
-        # Clampar a lo que el dispositivo soporta
-        n_in  = min(max(self.ch_meas, self.ch_meas2, self.ch_ref), max_in)
-        n_out = min(2, max_out)
-
-        # Ajustar fs si el dispositivo no soporta la solicitada
-        fs_req = self.fs
-        try:
-            sd.check_output_settings(device=self.dev_out,
-                                     channels=n_out, samplerate=fs_req)
-            sd.check_input_settings(device=self.dev_in,
-                                    channels=n_in,  samplerate=fs_req)
-            fs_use = fs_req
-        except sd.PortAudioError:
-            # Fallback a la fs nativa del dispositivo de entrada
-            fs_use = int(info_in['default_samplerate'])
-            self.fs = fs_use   # actualizar engine para que el DSP use la correcta
-
-        self._stream = sd.Stream(
-            samplerate = fs_use,
-            blocksize  = self.blocksize,
-            device     = (self.dev_in, self.dev_out),
-            channels   = (n_in, n_out),
-            dtype      = 'float32',
-            callback   = self._callback,
-            latency    = 'low'
-        )
         self._stream.start()
         self._running = True
 
@@ -301,17 +587,20 @@ class AudioEngine:
         if was_running:
             self.start()
 
-    # ── Lectura de buffers ────────────────────────────────────────────
+    # ── Lectura de buffers (compatibilidad hacia atrás) ───────────────
 
     def get_buffers(self):
         """Retorna (x_ref, y_meas) con n_averages × nperseg muestras."""
         n = self.nperseg * self.n_averages
-        return self.buf_ref.read(n), self.buf_meas.read(n)
+        return self.buf_ref.read(n), self.buf_meas_list[0].read(n)
 
     def get_buffer_meas2(self):
-        """Retorna y_meas2 (2do canal de medición)."""
-        n = self.nperseg * self.n_averages
-        return self.buf_meas2.read(n)
+        """Retorna y_meas2 (2do canal). Compat. hacia atrás."""
+        return self.get_buffer_meas(1)
+
+    def get_buffer_spec_legacy(self):
+        """Backward compat: retorna el canal spectrum 0."""
+        return self.get_buffer_spec(0)
 
     @property
     def running(self):
@@ -321,7 +610,8 @@ class AudioEngine:
 
     @staticmethod
     def list_devices():
-        devices = sd.query_devices()
+        with _suppress_pa_stderr():
+            devices = sd.query_devices()
         result  = []
         for i, d in enumerate(devices):
             result.append({
