@@ -5211,15 +5211,16 @@ class MainWindow(QMainWindow):
     # ── Handlers ──────────────────────────────────────────────────────
 
     def _on_start(self):
-        try:
-            self.engine.start()
-        except Exception as exc:
-            self.sb.showMessage(f'⚠  Error al abrir stream: {exc}', 8000)
-            return
+        # Abrir stream solo si no está corriendo ya (el GEN puede haberlo abierto antes)
+        if not self.engine.running:
+            try:
+                self.engine.start()
+            except Exception as exc:
+                self.sb.showMessage(f'⚠  Error al abrir stream: {exc}', 8000)
+                return
         self.timer.start()
         self._set_running()
-        self._silent_ticks = 0   # contador para detección de señal cero
-        # Programar chequeo de señal 3 s después de arrancar
+        self._silent_ticks = 0
         QTimer.singleShot(3000, self._check_signal_present)
 
     def _check_signal_present(self):
@@ -5257,10 +5258,13 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_stop(self):
+        # Solo detiene la MEDICIÓN (timer + análisis DSP).
+        # El stream de audio sigue abierto — el generador de ruido es independiente.
         self.timer.stop()
-        self.engine.stop()
-        # NO se borran las gráficas — la última medición queda visible (freeze)
         self._set_stopped()
+        # Si el generador también está apagado, cerrar el stream para liberar hardware
+        if not self.engine.noise_on:
+            self.engine.stop()
 
 
 
@@ -5342,9 +5346,21 @@ class MainWindow(QMainWindow):
         # Sincronizar estado en todos los botones de noise
         for b in self._all_noise_btns:
             b.setChecked(checked)
-        # Si el stream no está corriendo, mostrarlo en status bar
-        if checked and not self.engine.running:
-            self.sb.showMessage('▶  Presiona Play para activar el generador', 4000)
+        if checked:
+            # El generador necesita stream abierto — lo abre solo si hace falta,
+            # sin iniciar la medición (timer queda detenido).
+            if not self.engine.running:
+                try:
+                    self.engine.start()
+                except Exception as exc:
+                    self.sb.showMessage(f'⚠  Error al abrir stream: {exc}', 6000)
+                    self.engine.noise_on = False
+                    for b in self._all_noise_btns:
+                        b.setChecked(False)
+        else:
+            # Generador apagado: si la medición también está parada, cerrar stream
+            if not self.timer.isActive():
+                self.engine.stop()
 
     def _on_signal_type(self, idx):
         # Noise/Pink/White/Tone/Sweep — primer item es alias de pink
