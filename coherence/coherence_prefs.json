@@ -1,0 +1,83 @@
+{
+  "dev_in": 2,
+  "dev_out": 2,
+  "ch_ref": 4,
+  "ch_spl": 1,
+  "current_ws": 0,
+  "workspaces": [
+    {
+      "name": "Workspace 1",
+      "dev_in": 2,
+      "dev_out": 2,
+      "ch_ref": 4,
+      "ch_spl": 1,
+      "n_averages": 8,
+      "nperseg": 4096,
+      "smooth": 0.0,
+      "tf_engines": [],
+      "sp_engines": [
+        {
+          "ch": 1,
+          "color": "#3cf53c",
+          "name": "1mic"
+        },
+        {
+          "ch": 4,
+          "color": "#4fc3f7",
+          "name": "ref"
+        }
+      ]
+    }
+  ],
+  "graph_settings": {
+    "tf_smooth_bpo": 3,
+    "link_smooth": true,
+    "link_ph_mag_smooth": true,
+    "link_plot_zoom": false,
+    "plot_proportional": false,
+    "instantaneous": false,
+    "tf_line_thick_fg": 2,
+    "tf_line_thick_bg": 2,
+    "tf_mag_avg_mode": "Polar",
+    "tf_y_grid": 6,
+    "tf_y_scroll": 3,
+    "tf_y_zoom": 3,
+    "tf_mag_min": -30.0,
+    "tf_mag_max": 30.0,
+    "tf_ph_min": -185.0,
+    "tf_ph_max": 185.0,
+    "tf_f_lo": 20.0,
+    "tf_f_hi": 20000.0,
+    "unwrap_phase": false,
+    "phase_as_gd": false,
+    "coh_visible": true,
+    "coh_quarter_height": false,
+    "coh_squared": true,
+    "coh_blanking_pct": 10,
+    "mtw_coh": true,
+    "coh_thick_follows_fg": true,
+    "coh_line_thick": 4,
+    "peak_hold": false,
+    "ir_show_peak": true,
+    "ir_optimize": true,
+    "ir_overlap_pct": 50,
+    "ir_mag_thresh_db": 0,
+    "ir_line_thick_fg": 1,
+    "ir_line_thick_bg": 1,
+    "ir_hpf_en": false,
+    "ir_hpf_hz": 100,
+    "ir_lpf_en": false,
+    "ir_lpf_hz": 24000,
+    "ir_trace_ctrl": 0,
+    "ir_freq_scale": "1/3 Octave",
+    "fft_window_type": "Hann",
+    "hist_mode": 0,
+    "ir_visible": true,
+    "ir_mag_min": -1.1,
+    "ir_mag_max": 1.1,
+    "spec_mag_min": -80.0,
+    "spec_mag_max": 6.0,
+    "sg_vmin": -90.0,
+    "sg_vmax": -6.0
+  }
+}
