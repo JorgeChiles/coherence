@@ -26,7 +26,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QTabBar, QStatusBar, QDoubleSpinBox,
     QProgressBar, QFileDialog, QDialog,
     QDialogButtonBox, QFormLayout, QScrollArea,
-    QMessageBox, QCheckBox,
+    QMessageBox, QCheckBox, QRadioButton, QButtonGroup,
     QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QTreeWidget, QTreeWidgetItem,
     QLineEdit, QSplitter, QStackedWidget, QMenu,
@@ -3122,6 +3122,20 @@ class MainWindow(QMainWindow):
         _s2.setStyleSheet(f'color:{BORDER};')
         ov.addWidget(_s2)
 
+        # ── View panel ───────────────────────────────────────────────
+        view_container = QWidget()
+        view_container.setStyleSheet(f'background:{BG_SETTINGS};')
+        view_lay = QVBoxLayout(view_container)
+        view_lay.setContentsMargins(6, 4, 6, 4)
+        view_lay.setSpacing(3)
+        self._build_view_block(view_lay)
+        ov.addWidget(view_container)
+
+        # Separador
+        _s3 = QFrame(); _s3.setFrameShape(QFrame.Shape.HLine)
+        _s3.setStyleSheet(f'color:{BORDER};')
+        ov.addWidget(_s3)
+
         # ── Signal Generator fijo abajo ───────────────────────────────
         sg_container = QWidget()
         sg_container.setStyleSheet(f'background:{BG_SETTINGS};')
@@ -3132,6 +3146,174 @@ class MainWindow(QMainWindow):
         ov.addWidget(sg_container)
 
         return outer
+
+    # ── View block ────────────────────────────────────────────────────
+
+    def _build_view_block(self, layout):
+        """Panel View estilo SMAART — presets de vista + Capture."""
+
+        _ss_hdr = (f'color:{TEXT_HI};font-size:11px;font-weight:bold;'
+                   f'background:transparent;letter-spacing:1px;')
+        _ss_key = (f'QPushButton{{background:#252525;color:{TEXT_MID};'
+                   f'border:1px solid #333;border-radius:3px;'
+                   f'font-size:10px;font-weight:bold;min-width:20px;'
+                   f'padding:1px 4px;}}'
+                   f'QPushButton:hover{{background:#2a382a;color:{GREEN};'
+                   f'border-color:{GREEN};}}')
+        _ss_btn = (f'QPushButton{{background:#1e1e1e;color:{TEXT_MID};'
+                   f'border:1px solid #333;border-radius:3px;'
+                   f'font-size:10px;padding:3px 10px;}}'
+                   f'QPushButton:hover{{background:#252525;color:{TEXT_HI};}}')
+        _ss_ir  = (f'QPushButton{{background:#1e261e;color:#88bb88;'
+                   f'border:1px solid #3a4a3a;border-radius:3px;'
+                   f'font-size:10px;font-weight:bold;padding:2px 8px;}}'
+                   f'QPushButton:checked{{background:#2a3a2a;color:{GREEN};'
+                   f'border-color:{GREEN};}}'
+                   f'QPushButton:hover{{border-color:{GREEN};}}')
+
+        frame = QFrame()
+        frame.setStyleSheet(
+            f'QFrame{{background:#161616;border:1px solid #2a2a2a;border-radius:5px;}}')
+        fv = QVBoxLayout(frame)
+        fv.setContentsMargins(8, 6, 8, 6)
+        fv.setSpacing(5)
+
+        # ── Header ────────────────────────────────────────────────────
+        hdr = QLabel('View')
+        hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hdr.setStyleSheet(
+            f'color:{TEXT_HI};font-size:12px;font-weight:bold;background:transparent;'
+            f'border-bottom:1px solid #252525;padding-bottom:4px;')
+        fv.addWidget(hdr)
+
+        # ── Tab: workspace selector ───────────────────────────────────
+        tab_row = QHBoxLayout(); tab_row.setSpacing(4)
+        tab_lbl = QLabel('Tab:')
+        tab_lbl.setStyleSheet(f'color:{TEXT_MID};font-size:10px;background:transparent;')
+        tab_lbl.setFixedWidth(28)
+        if not hasattr(self, '_cmb_view_tab'):
+            self._cmb_view_tab = QComboBox()
+        self._cmb_view_tab.setFixedHeight(22)
+        self._cmb_view_tab.setStyleSheet(
+            f'font-size:10px;color:{TEXT_HI};background:#222;'
+            f'border:1px solid #333;border-radius:3px;padding:0 4px;')
+        tab_row.addWidget(tab_lbl)
+        tab_row.addWidget(self._cmb_view_tab, stretch=1)
+        fv.addLayout(tab_row)
+
+        # ── Layout icons row 1: Single | Split-H | Live IR ────────────
+        ico_row1 = QHBoxLayout(); ico_row1.setSpacing(3)
+
+        _ss_ico = (f'QPushButton{{background:#1a1a1a;color:{TEXT_MID};'
+                   f'border:1px solid #333;border-radius:3px;font-size:9px;'
+                   f'padding:2px;}}'
+                   f'QPushButton:hover{{background:#222;border-color:#555;}}')
+
+        # Mini-iconos de layout — representaciones en texto
+        ico_single = QPushButton('▣');    ico_single.setFixedSize(28, 22)
+        ico_split  = QPushButton('▤');    ico_split.setFixedSize(28, 22)
+        for b in (ico_single, ico_split):
+            b.setStyleSheet(_ss_ico)
+            b.setToolTip('Single view')
+
+        btn_live_ir = QPushButton('Live IR')
+        btn_live_ir.setCheckable(True)
+        btn_live_ir.setChecked(getattr(self, '_ir_visible', True))
+        btn_live_ir.setFixedHeight(22)
+        btn_live_ir.setStyleSheet(_ss_ir)
+        btn_live_ir.clicked.connect(lambda checked: self._toggle_ir_panel())
+
+        ico_row1.addWidget(ico_single)
+        ico_row1.addWidget(ico_split)
+        ico_row1.addStretch()
+        ico_row1.addWidget(btn_live_ir)
+        fv.addLayout(ico_row1)
+
+        # Guardar ref para sincronizar estado
+        if not hasattr(self, '_btn_live_ir_list'):
+            self._btn_live_ir_list = []
+        self._btn_live_ir_list.append(btn_live_ir)
+
+        # ── Presets ───────────────────────────────────────────────────
+        sep_row = QHBoxLayout(); sep_row.setSpacing(4)
+        sep_l = QFrame(); sep_l.setFrameShape(QFrame.Shape.HLine)
+        sep_r = QFrame(); sep_r.setFrameShape(QFrame.Shape.HLine)
+        for s in (sep_l, sep_r): s.setStyleSheet(f'color:#333;')
+        sep_lbl = QLabel('Presets')
+        sep_lbl.setStyleSheet(
+            f'color:{TEXT_MID};font-size:9px;background:transparent;')
+        sep_row.addWidget(sep_l, stretch=1)
+        sep_row.addWidget(sep_lbl)
+        sep_row.addWidget(sep_r, stretch=1)
+        fv.addLayout(sep_row)
+
+        # Definición: (shortcut_label, display_name, acción)
+        _PRESETS = [
+            ('S', 'Spectrum',             lambda: self._on_view_mode_changed('Spectrum')),
+            ('T', 'Transfer Function',    lambda: self._on_view_mode_changed('Magnitude')),
+            ('1', 'Spectrograph',         lambda: self._on_view_mode_changed('Spectrograph')),
+            ('2', 'Magnitude / Phase',    lambda: self._on_view_mode_changed('Phase')),
+            ('3', 'RTA / RTA',            lambda: self._on_view_mode_changed('Spectrum')),
+            ('4', 'RTA / Spectrograph',   lambda: self._on_view_mode_changed('Spectrograph')),
+            ('5', 'Magnitude / Magnitude',lambda: self._on_view_mode_changed('Magnitude')),
+            ('6', 'Magnitude / Phase',    lambda: self._on_view_mode_changed('Phase')),
+            ('7', 'IR Log',               lambda: self._on_view_mode_changed('Magnitude')),
+            ('8', 'TF Only',              lambda: self._on_view_mode_changed('Magnitude')),
+            ('9', '- Empty -',            None),
+            ('0', 'Multi-Spectrum',       lambda: self._on_view_mode_changed('Spectrum')),
+        ]
+
+        for key, name, action in _PRESETS:
+            row = QHBoxLayout(); row.setSpacing(5)
+            btn_k = QPushButton(key)
+            btn_k.setFixedSize(20, 18)
+            btn_k.setStyleSheet(_ss_key)
+            lbl = QLabel(name)
+            lbl.setStyleSheet(
+                f'color:{TEXT_HI if action else TEXT_DIM};'
+                f'font-size:10px;background:transparent;')
+            if action:
+                btn_k.clicked.connect(action)
+                lbl.mousePressEvent = lambda e, a=action: a()
+            row.addWidget(btn_k)
+            row.addWidget(lbl, stretch=1)
+            fv.addLayout(row)
+
+        # ── Capture / Manage ──────────────────────────────────────────
+        bot = QHBoxLayout(); bot.setSpacing(4)
+        btn_capture = QPushButton('Capture')
+        btn_manage  = QPushButton('Manage')
+        for b in (btn_capture, btn_manage):
+            b.setFixedHeight(24)
+            b.setStyleSheet(_ss_btn)
+        btn_capture.clicked.connect(self._save_trace)
+        btn_manage.clicked.connect(
+            lambda: self.sb.showMessage('Manage traces — próximamente', 2000))
+        bot.addWidget(btn_capture, stretch=1)
+        bot.addWidget(btn_manage, stretch=1)
+        fv.addLayout(bot)
+
+        layout.addWidget(frame)
+
+        # Poblar workspace tabs
+        self._refresh_view_tab_combo()
+
+    def _refresh_view_tab_combo(self):
+        """Sincroniza el combo Tab: con los workspaces actuales."""
+        if not hasattr(self, '_cmb_view_tab'):
+            return
+        self._cmb_view_tab.blockSignals(True)
+        self._cmb_view_tab.clear()
+        for ws in getattr(self, '_workspaces', []):
+            self._cmb_view_tab.addItem(ws.get('name', 'Workspace'))
+        idx = getattr(self, '_current_ws_idx', 0)
+        if idx < self._cmb_view_tab.count():
+            self._cmb_view_tab.setCurrentIndex(idx)
+        self._cmb_view_tab.blockSignals(False)
+        # Conectar signal solo la primera vez (evitar múltiples conexiones)
+        if not getattr(self, '_view_tab_combo_connected', False):
+            self._cmb_view_tab.currentIndexChanged.connect(self._ws_load)
+            self._view_tab_combo_connected = True
 
     # ── Signal Generator block (compartido, aparece siempre abajo) ───
 
@@ -3190,16 +3372,19 @@ class MainWindow(QMainWindow):
         r1.addWidget(self.btn_noise_p, stretch=1)
         sg_v.addLayout(r1)
 
-        # Fila 2: Output | - | +
+        # Fila 2: Output ▼ | - | +
         r2 = QHBoxLayout(); r2.setSpacing(4)
 
-        if not hasattr(self, 'cmb_noise_dev'):
-            self.cmb_noise_dev = QComboBox()
-        self.cmb_noise_dev.setFixedHeight(26)
-        self.cmb_noise_dev.setStyleSheet(
-            f'font-size:11px;color:{TEXT_HI};background:#222;'
-            f'border:1px solid #333;border-radius:4px;padding:0 4px;')
-        r2.addWidget(self.cmb_noise_dev, stretch=2)
+        if not hasattr(self, '_btn_noise_out'):
+            self._btn_noise_out = QPushButton('Output ▾')
+            self._btn_noise_out.setObjectName('btn_noise_out')
+        self._btn_noise_out.setFixedHeight(26)
+        self._btn_noise_out.setStyleSheet(
+            f'QPushButton{{font-size:11px;color:{TEXT_HI};background:#222;'
+            f'border:1px solid #333;border-radius:4px;padding:0 6px;text-align:left;}}'
+            f'QPushButton:hover{{background:#2a2a2a;border-color:#555;}}')
+        self._btn_noise_out.clicked.connect(self._show_noise_dev_menu)
+        r2.addWidget(self._btn_noise_out, stretch=2)
 
         _pm = (f'QPushButton{{font-size:16px;font-weight:bold;padding:0;'
                f'border:1px solid #333;background:#222;color:{TEXT_MID};border-radius:4px;}}'
@@ -4255,6 +4440,7 @@ class MainWindow(QMainWindow):
         self._ws_tab_bar.blockSignals(False)
         self._ws_tab_bar.setCurrentIndex(idx)   # triggers _ws_on_tab_changed
         self._save_prefs()
+        self._refresh_view_tab_combo()
 
     def _ws_close_tab(self, idx: int):
         """Cierra el workspace en idx (mínimo 1 tab)."""
@@ -4270,6 +4456,7 @@ class MainWindow(QMainWindow):
         self._ws_tab_bar.setCurrentIndex(new_idx)
         self._ws_load(new_idx)
         self._save_prefs()
+        self._refresh_view_tab_combo()
 
     def _ws_on_tab_changed(self, idx: int):
         """Callback cuando el usuario cambia de tab."""
@@ -4280,6 +4467,7 @@ class MainWindow(QMainWindow):
         self._ws_save_current()
         self._ws_load(idx)
         self._save_prefs()
+        self._refresh_view_tab_combo()
 
     def _ws_rename_tab_evt(self, event):
         """Double-click en tab bar → dialog de renombrar."""
@@ -5305,30 +5493,21 @@ class MainWindow(QMainWindow):
 
     def _show_io_config(self):
         """
-        Dialog de configuración de I/O estilo SMAART.
-        Muestra todas las interfaces detectadas por PortAudio con:
-          - Tabla de dispositivos (Use / API:Driver / Friendly Name / Status)
-          - Tabs por dispositivo con sus canales (Use / Ch / Name / Cal.Offset / Level)
+        Dialog de configuración de I/O.
+        - Selección exclusiva (radio) del dispositivo activo en Input y Output.
+        - Apply confirma la selección y reinicia el stream si estaba corriendo.
+        - Cancel descarta cambios.
         """
         import sounddevice as sd
 
         dlg = QDialog(self)
         dlg.setWindowTitle('I-O Config')
-        dlg.resize(900, 680)
+        dlg.resize(860, 560)
         dlg.setStyleSheet(f'background:#1e1e1e;color:{TEXT_HI};font-size:11px;')
 
         root = QVBoxLayout(dlg)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
-
-        # ── Tabs Input / Output ───────────────────────────────────────
-        io_tabs = QTabWidget()
-        io_tabs.setStyleSheet(
-            f'QTabWidget::pane{{border:1px solid #333;background:#1a1a1a;}}'
-            f'QTabBar::tab{{background:#252525;color:{TEXT_MID};padding:6px 20px;'
-            f'border:1px solid #333;border-bottom:none;border-radius:3px 3px 0 0;}}'
-            f'QTabBar::tab:selected{{background:#1a1a1a;color:{TEXT_HI};}}')
-        root.addWidget(io_tabs)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
 
         # Obtener dispositivos
         try:
@@ -5339,182 +5518,160 @@ class MainWindow(QMainWindow):
         all_devs = []
         for i, d in enumerate(raw_devs):
             all_devs.append({
-                'id':    i,
-                'api':   f"CoreAudio: {d['name']}",
-                'name':  d['name'],
-                'in':    int(d['max_input_channels']),
-                'out':   int(d['max_output_channels']),
-                'fs':    int(d['default_samplerate']),
+                'id':   i,
+                'name': d['name'],
+                'in':   int(d['max_input_channels']),
+                'out':  int(d['max_output_channels']),
+                'fs':   int(d['default_samplerate']),
             })
 
-        _tbl_style = (
+        _tbl_ss = (
             f'QTableWidget{{background:#111;color:{TEXT_HI};gridline-color:#2a2a2a;'
-            f'border:1px solid #2a2a2a;font-size:11px;}}'
-            f'QTableWidget::item{{padding:3px 6px;}}'
-            f'QTableWidget::item:selected{{background:#1e3a4a;color:{TEXT_HI};}}'
+            f'border:1px solid #2a2a2a;font-size:11px;selection-background-color:#1e3a4a;}}'
+            f'QTableWidget::item{{padding:4px 6px;}}'
             f'QHeaderView::section{{background:#2a2a2a;color:{TEXT_MID};'
             f'padding:4px 6px;border:none;border-right:1px solid #1a1a1a;font-size:10px;}}')
+        _btn_ss = (
+            f'QPushButton{{background:#2a2a2a;color:{TEXT_MID};border:1px solid #3a3a3a;'
+            f'border-radius:4px;padding:5px 18px;font-size:11px;min-width:72px;}}'
+            f'QPushButton:hover{{background:#333;color:{TEXT_HI};}}'
+            f'QPushButton[apply="1"]{{background:#1e3a1e;color:{GREEN};'
+            f'border-color:{GREEN};font-weight:bold;}}'
+            f'QPushButton[apply="1"]:hover{{background:#244a24;}}')
 
-        def _make_io_panel(mode):
-            """mode = 'in' o 'out'"""
+        # ── Selección temporal (antes de Apply) ───────────────────────
+        _sel = {
+            'in':  self.engine.dev_in,
+            'out': self.engine.dev_out,
+        }
+
+        # ── Tabs Input / Output ───────────────────────────────────────
+        tab_widget = QTabWidget()
+        tab_widget.setStyleSheet(
+            f'QTabWidget::pane{{border:1px solid #333;background:#1a1a1a;}}'
+            f'QTabBar::tab{{background:#252525;color:{TEXT_MID};padding:6px 22px;'
+            f'border:1px solid #333;border-bottom:none;border-radius:3px 3px 0 0;}}'
+            f'QTabBar::tab:selected{{background:#1a1a1a;color:{TEXT_HI};}}')
+        root.addWidget(tab_widget, stretch=1)
+
+        def _make_panel(mode):
             devs = [d for d in all_devs if d[mode] > 0]
-
             panel = QWidget()
             pv = QVBoxLayout(panel)
-            pv.setContentsMargins(6, 6, 6, 6)
+            pv.setContentsMargins(6, 8, 6, 6)
             pv.setSpacing(6)
 
-            # ── Tabla de dispositivos ─────────────────────────────────
-            dev_tbl = QTableWidget(len(devs), 4)
-            dev_tbl.setStyleSheet(_tbl_style)
-            dev_tbl.setHorizontalHeaderLabels(['Use', 'API : Driver Name', 'Friendly Name', 'Status'])
-            dev_tbl.horizontalHeader().setStretchLastSection(False)
-            dev_tbl.horizontalHeader().setSectionResizeMode(0, dev_tbl.horizontalHeader().ResizeMode.Fixed)
-            dev_tbl.horizontalHeader().setSectionResizeMode(1, dev_tbl.horizontalHeader().ResizeMode.Stretch)
-            dev_tbl.horizontalHeader().setSectionResizeMode(2, dev_tbl.horizontalHeader().ResizeMode.Stretch)
-            dev_tbl.horizontalHeader().setSectionResizeMode(3, dev_tbl.horizontalHeader().ResizeMode.Fixed)
-            dev_tbl.setColumnWidth(0, 44)
-            dev_tbl.setColumnWidth(3, 60)
-            dev_tbl.setSelectionBehavior(dev_tbl.SelectionBehavior.SelectRows)
-            dev_tbl.setEditTriggers(dev_tbl.EditTrigger.NoEditTriggers)
-            dev_tbl.verticalHeader().setVisible(False)
-            dev_tbl.setFixedHeight(160)
+            lbl = QLabel(
+                f'Selecciona el dispositivo de {"entrada" if mode=="in" else "salida"} activo:')
+            lbl.setStyleSheet(f'color:{TEXT_MID};font-size:10px;background:transparent;')
+            pv.addWidget(lbl)
 
-            _use_devs = set()   # ids de dispositivos marcados como "Use"
-            _chk_map  = {}      # row → QCheckBox
+            tbl = QTableWidget(len(devs), 4)
+            tbl.setStyleSheet(_tbl_ss)
+            tbl.setHorizontalHeaderLabels(['●', 'Dispositivo', 'Canales', 'Sample Rate'])
+            tbl.horizontalHeader().setSectionResizeMode(0, tbl.horizontalHeader().ResizeMode.Fixed)
+            tbl.horizontalHeader().setSectionResizeMode(1, tbl.horizontalHeader().ResizeMode.Stretch)
+            tbl.horizontalHeader().setSectionResizeMode(2, tbl.horizontalHeader().ResizeMode.Fixed)
+            tbl.horizontalHeader().setSectionResizeMode(3, tbl.horizontalHeader().ResizeMode.Fixed)
+            tbl.setColumnWidth(0, 34)
+            tbl.setColumnWidth(2, 80)
+            tbl.setColumnWidth(3, 100)
+            tbl.setSelectionBehavior(tbl.SelectionBehavior.SelectRows)
+            tbl.setEditTriggers(tbl.EditTrigger.NoEditTriggers)
+            tbl.verticalHeader().setVisible(False)
+            tbl.setSelectionMode(tbl.SelectionMode.SingleSelection)
+
+            radio_grp = []   # lista de QRadioButton
 
             for row, d in enumerate(devs):
-                # Use checkbox
-                chk = QCheckBox()
-                chk.setChecked(True)
-                _use_devs.add(d['id'])
-                cell_w = QWidget()
-                cell_l = QHBoxLayout(cell_w)
-                cell_l.setContentsMargins(8, 0, 0, 0)
-                cell_l.addWidget(chk)
-                dev_tbl.setCellWidget(row, 0, cell_w)
-                _chk_map[row] = chk
+                rb = QRadioButton()
+                rb.setChecked(d['id'] == _sel[mode])
+                rb.setStyleSheet('QRadioButton{background:transparent;}')
+                cw = QWidget(); cl = QHBoxLayout(cw)
+                cl.setContentsMargins(6, 0, 0, 0); cl.addWidget(rb)
+                tbl.setCellWidget(row, 0, cw)
+                radio_grp.append((rb, d['id']))
 
-                dev_tbl.setItem(row, 1, QTableWidgetItem(d['api']))
-                dev_tbl.setItem(row, 2, QTableWidgetItem(d['name']))
+                tbl.setItem(row, 1, QTableWidgetItem(d['name']))
+                tbl.setItem(row, 2, QTableWidgetItem(str(d[mode])))
+                tbl.setItem(row, 3, QTableWidgetItem(f"{d['fs']} Hz"))
 
-                # Status: intentar abrir stream
-                try:
-                    if mode == 'in':
-                        sd.check_input_settings(device=d['id'], channels=1, samplerate=d['fs'])
-                    else:
-                        sd.check_output_settings(device=d['id'], channels=1, samplerate=d['fs'])
-                    status = 'OK'
-                    s_color = '#66bb6a'
-                except Exception:
-                    status = 'N/C'
-                    s_color = '#ef5350'
+                # Seleccionar la fila del dispositivo activo
+                if d['id'] == _sel[mode]:
+                    tbl.selectRow(row)
 
-                s_item = QTableWidgetItem(status)
-                s_item.setForeground(QColor(s_color))
-                dev_tbl.setItem(row, 3, s_item)
+                # Clic en fila → activa radio
+                def _on_row(row=row, radio_grp=radio_grp, mode=mode):
+                    for rb2, did in radio_grp:
+                        rb2.setChecked(False)
+                    radio_grp[row][0].setChecked(True)
+                    _sel[mode] = radio_grp[row][1]
 
-            pv.addWidget(dev_tbl)
+                rb.toggled.connect(
+                    lambda checked, row=row, radio_grp=radio_grp, mode=mode:
+                        _sel.__setitem__(mode, radio_grp[row][1]) if checked else None)
 
-            # Remove button
-            btn_remove = QPushButton('Remove')
-            btn_remove.setFixedWidth(80)
-            btn_remove.setStyleSheet(
-                f'QPushButton{{background:#2a2a2a;color:{TEXT_MID};border:1px solid #3a3a3a;'
-                f'border-radius:3px;padding:3px 10px;}}'
-                f'QPushButton:hover{{background:#333;}}')
-            rm_row = QHBoxLayout()
-            rm_row.addStretch()
-            rm_row.addWidget(btn_remove)
-            pv.addLayout(rm_row)
+            tbl.cellClicked.connect(
+                lambda r, c, rg=radio_grp, mode=mode:
+                    [rb2.setChecked(i == r) for i, (rb2, _) in enumerate(rg)]
+                    or _sel.__setitem__(mode, rg[r][1]))
 
-            # ── Tabs por dispositivo con sus canales ──────────────────
-            ch_tabs = QTabWidget()
-            ch_tabs.setStyleSheet(io_tabs.styleSheet())
-            pv.addWidget(ch_tabs, stretch=1)
+            pv.addWidget(tbl, stretch=1)
 
-            for d in devs:
-                n_ch = d[mode]
-                tab_w = QWidget()
-                tv = QVBoxLayout(tab_w)
-                tv.setContentsMargins(4, 4, 4, 4)
-
-                ch_tbl = QTableWidget(n_ch, 6)
-                ch_tbl.setStyleSheet(_tbl_style)
-                ch_tbl.setHorizontalHeaderLabels(
-                    ['Use', 'Ch', 'Channel Name', 'Friendly Name', 'Cal. Offset', 'Level'])
-                ch_tbl.horizontalHeader().setSectionResizeMode(0, ch_tbl.horizontalHeader().ResizeMode.Fixed)
-                ch_tbl.horizontalHeader().setSectionResizeMode(1, ch_tbl.horizontalHeader().ResizeMode.Fixed)
-                ch_tbl.horizontalHeader().setSectionResizeMode(2, ch_tbl.horizontalHeader().ResizeMode.Stretch)
-                ch_tbl.horizontalHeader().setSectionResizeMode(3, ch_tbl.horizontalHeader().ResizeMode.Stretch)
-                ch_tbl.horizontalHeader().setSectionResizeMode(4, ch_tbl.horizontalHeader().ResizeMode.Fixed)
-                ch_tbl.horizontalHeader().setSectionResizeMode(5, ch_tbl.horizontalHeader().ResizeMode.Fixed)
-                ch_tbl.setColumnWidth(0, 44)
-                ch_tbl.setColumnWidth(1, 36)
-                ch_tbl.setColumnWidth(4, 80)
-                ch_tbl.setColumnWidth(5, 160)
-                ch_tbl.verticalHeader().setVisible(False)
-                ch_tbl.setEditTriggers(ch_tbl.EditTrigger.NoEditTriggers)
-
-
-                for ch in range(n_ch):
-                    # Use
-                    chk_ch = QCheckBox()
-                    chk_ch.setChecked(ch < 2)
-                    cw = QWidget(); cl = QHBoxLayout(cw)
-                    cl.setContentsMargins(8,0,0,0); cl.addWidget(chk_ch)
-                    ch_tbl.setCellWidget(ch, 0, cw)
-
-                    ch_tbl.setItem(ch, 1, QTableWidgetItem(str(ch + 1)))
-                    ch_tbl.setItem(ch, 2, QTableWidgetItem(f'Input {ch+1}' if mode=='in' else f'Output {ch+1}'))
-                    ch_tbl.setItem(ch, 3, QTableWidgetItem(f'Input {ch+1}' if mode=='in' else f'Output {ch+1}'))
-                    ch_tbl.setItem(ch, 4, QTableWidgetItem('0.0'))
-
-                    # Level bar
-                    bar = QProgressBar()
-                    bar.setRange(0, 100)
-                    bar.setValue(30 if ch < 2 else 0)
-                    bar.setTextVisible(False)
-                    bar.setFixedHeight(14)
-                    bar.setStyleSheet(
-                        'QProgressBar{background:#111;border:none;border-radius:2px;}'
-                        'QProgressBar::chunk{background:#44aa44;border-radius:2px;}')
-                    ch_tbl.setCellWidget(ch, 5, bar)
-
-                tv.addWidget(ch_tbl)
-                ch_tabs.addTab(tab_w, d['name'][:20])
-
-            # ── Botones inferiores ────────────────────────────────────
-            bot = QHBoxLayout()
-            btn_clear = QPushButton('Clear Settings')
-            btn_cal   = QPushButton('Calibrate')
-            for b in (btn_clear, btn_cal):
-                b.setStyleSheet(
-                    f'QPushButton{{background:#2a2a2a;color:{TEXT_MID};border:1px solid #3a3a3a;'
-                    f'border-radius:3px;padding:4px 14px;}}'
-                    f'QPushButton:hover{{background:#333;color:{TEXT_HI};}}')
-            bot.addWidget(btn_clear)
-            bot.addStretch()
-            bot.addWidget(btn_cal)
-            pv.addLayout(bot)
+            # Info del dispositivo seleccionado
+            lbl_cur = QLabel()
+            lbl_cur.setStyleSheet(
+                f'color:{GREEN};font-size:10px;background:transparent;padding:2px 0;')
+            cur_name = next((d['name'] for d in devs if d['id'] == _sel[mode]), '—')
+            lbl_cur.setText(f'Activo: {cur_name}')
+            pv.addWidget(lbl_cur)
 
             return panel
 
-        io_tabs.addTab(_make_io_panel('in'),  'Input')
-        io_tabs.addTab(_make_io_panel('out'), 'Output')
+        tab_widget.addTab(_make_panel('in'),  'Input')
+        tab_widget.addTab(_make_panel('out'), 'Output')
 
-        # ── Close ─────────────────────────────────────────────────────
-        btn_close = QPushButton('Close')
-        btn_close.setFixedWidth(80)
-        btn_close.setStyleSheet(
-            f'QPushButton{{background:#2a2a2a;color:{TEXT_MID};border:1px solid #3a3a3a;'
-            f'border-radius:3px;padding:4px 14px;}}'
-            f'QPushButton:hover{{background:#333;color:{TEXT_HI};}}')
-        btn_close.clicked.connect(dlg.accept)
-        close_row = QHBoxLayout()
-        close_row.addStretch()
-        close_row.addWidget(btn_close)
-        root.addLayout(close_row)
+        # ── Botones Apply / Cancel ────────────────────────────────────
+        btn_apply  = QPushButton('Apply')
+        btn_cancel = QPushButton('Cancel')
+        btn_apply.setProperty('apply', '1')
+        for b in (btn_apply, btn_cancel):
+            b.setStyleSheet(_btn_ss)
+
+        def _apply():
+            was_running = self.engine.running
+            # Aplicar selección
+            self.engine.dev_in  = _sel['in']
+            self.engine.dev_out = _sel['out']
+            # Actualizar combos de device en la UI principal
+            for i, did in enumerate(getattr(self, '_dev_in_ids', [])):
+                if did == _sel['in']:
+                    self.cmb_dev_in.blockSignals(True)
+                    self.cmb_dev_in.setCurrentIndex(i)
+                    self.cmb_dev_in.blockSignals(False)
+                    break
+            for i, did in enumerate(getattr(self, '_dev_out_ids', [])):
+                if did == _sel['out']:
+                    self.cmb_dev_out.blockSignals(True)
+                    self.cmb_dev_out.setCurrentIndex(i)
+                    self.cmb_dev_out.blockSignals(False)
+                    break
+            # Reiniciar stream si estaba activo
+            if was_running:
+                self._safe_restart()
+            self._save_prefs()
+            self.sb.showMessage(
+                f'✓  I/O aplicado — In: dev {_sel["in"]}  Out: dev {_sel["out"]}', 4000)
+            dlg.accept()
+
+        btn_apply.clicked.connect(_apply)
+        btn_cancel.clicked.connect(dlg.reject)
+
+        bot = QHBoxLayout()
+        bot.addStretch()
+        bot.addWidget(btn_cancel)
+        bot.addWidget(btn_apply)
+        root.addLayout(bot)
 
         dlg.exec()
 
@@ -5786,9 +5943,11 @@ class MainWindow(QMainWindow):
 
     def _populate_devices(self):
         devices = AudioEngine.list_devices()
-        self._dev_in_ids   = []
-        self._dev_out_ids  = []
+        self._dev_in_ids    = []
+        self._dev_out_ids   = []
         self._dev_noise_ids = []
+        self._noise_dev_list = []   # [(dev_id, name), …] para el menú del generador
+        _initial_noise_name  = 'Output'
 
         # Marcas de fabricantes que CoreAudio/PortAudio a veces reporta con 0 canales
         # aunque funcionan. Los incluimos siempre como candidatos de entrada Y salida.
@@ -5815,21 +5974,18 @@ class MainWindow(QMainWindow):
                 self._dev_out_ids.append(d['id'])
                 if d['id'] == self.engine.dev_out:
                     self.cmb_dev_out.setCurrentIndex(self.cmb_dev_out.count() - 1)
-                self.cmb_noise_dev.addItem(label)
-                self._dev_noise_ids.append(d['id'])
+                # Lista para el menú desplegable del Signal Generator
+                self._noise_dev_list.append((d['id'], d['name']))
                 if d['id'] == self.engine.dev_out:
-                    self.cmb_noise_dev.setCurrentIndex(self.cmb_noise_dev.count() - 1)
-
-        # "Configure…" como primera opción del dropdown Output
-        self.cmb_noise_dev.insertItem(0, 'Configure…')
-        self._dev_noise_ids.insert(0, -1)   # -1 = acción especial
-        # Ajustar selección actual (se desplazó por el insert)
-        cur = self.cmb_noise_dev.currentIndex()
-        self.cmb_noise_dev.setCurrentIndex(max(1, cur + 1))
+                    _initial_noise_name = d['name']
 
         self.cmb_dev_in.currentIndexChanged.connect(self._on_dev_in)
         self.cmb_dev_out.currentIndexChanged.connect(self._on_dev_out)
-        self.cmb_noise_dev.currentIndexChanged.connect(self._on_noise_dev)
+
+        # Actualizar label del botón Output con el dispositivo actual
+        if hasattr(self, '_btn_noise_out'):
+            short = _initial_noise_name[:22] + '…' if len(_initial_noise_name) > 22 else _initial_noise_name
+            self._btn_noise_out.setText(f'{short} ▾')
 
         # Actualizar labels de dispositivo en los sub-paneles Spectrum/Sgram
         if devices and self._dev_in_ids:
@@ -5975,6 +6131,14 @@ class MainWindow(QMainWindow):
                 self._safe_restart()
 
     def _on_noise_panel(self, checked):
+        if checked and self.engine.dev_out < 0:
+            # Sin tarjeta de salida configurada → abrir I-O Config primero
+            self.sb.showMessage('⚠  Configura la tarjeta de audio en I-O Config antes de usar el generador', 5000)
+            for b in self._all_noise_btns:
+                b.setChecked(False)
+            self._show_io_config()
+            return
+
         self.engine.noise_on = checked
         # Sincronizar estado en todos los botones de noise
         for b in self._all_noise_btns:
@@ -6015,23 +6179,46 @@ class MainWindow(QMainWindow):
     def _on_noise_channel(self, val):
         self.engine.noise_ch_start = val
 
-    def _on_noise_dev(self, idx):
-        if not (0 <= idx < len(self._dev_noise_ids)):
-            return
-        dev_id = self._dev_noise_ids[idx]
-        if dev_id == -1:
-            # "Configure…" → abrir I-O Config y volver al último output válido
-            # Bloquear señal para no re-entrar
-            self.cmb_noise_dev.blockSignals(True)
-            self.cmb_noise_dev.setCurrentIndex(
-                next((i for i in range(1, self.cmb_noise_dev.count())
-                      if self._dev_noise_ids[i] == self.engine.dev_out), 1))
-            self.cmb_noise_dev.blockSignals(False)
-            self._show_io_config()
-            return
+    def _show_noise_dev_menu(self):
+        """Muestra el menú de dispositivos de salida al pulsar el botón Output ▾."""
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f'QMenu{{background:#1e221e;color:{TEXT_HI};border:1px solid #3a3a3a;'
+            f'font-size:11px;padding:2px 0;}}'
+            f'QMenu::item{{padding:5px 28px 5px 12px;}}'
+            f'QMenu::item:selected{{background:#2a382a;color:{GREEN};}}'
+            f'QMenu::item:checked{{font-weight:bold;}}'
+        )
+
+        # Configure…
+        act_cfg = menu.addAction('Configure…')
+        act_cfg.triggered.connect(self._show_io_config)
+        menu.addSeparator()
+
+        # Dispositivos de salida
+        for dev_id, name in getattr(self, '_noise_dev_list', []):
+            act = menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(dev_id == self.engine.dev_out)
+            act.triggered.connect(
+                lambda checked, did=dev_id, n=name: self._set_noise_dev(did, n))
+
+        menu.exec(self._btn_noise_out.mapToGlobal(
+            self._btn_noise_out.rect().bottomLeft()))
+
+    def _set_noise_dev(self, dev_id: int, name: str):
+        """Aplica el dispositivo de salida seleccionado."""
         self.engine.dev_out = dev_id
+        # Actualizar label del botón con el nombre corto del dispositivo
+        short = name[:22] + '…' if len(name) > 22 else name
+        if hasattr(self, '_btn_noise_out'):
+            self._btn_noise_out.setText(f'{short} ▾')
         if self.engine.running:
             self._safe_restart()
+
+    def _on_noise_dev(self, idx):
+        # Mantenido por compatibilidad (ya no se usa con el nuevo menú)
+        pass
 
     # ── Window type helper ───────────────────────────────────────────────
     _WINDOW_MAP = {
@@ -7894,7 +8081,7 @@ class MainWindow(QMainWindow):
         # Niveles CPB del spectrum (pueden no existir si nunca se vio esa tab)
         lev_x = self.canvas_spec._last_lx
         lev_y = self.canvas_spec._last_ly
-        if lev_x is None:
+        if lev_x is None or lev_y is None:
             lev_x = np.full(31, -80.0)
             lev_y = np.full(31, -80.0)
 
