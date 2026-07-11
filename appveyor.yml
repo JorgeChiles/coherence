@@ -1,0 +1,31 @@
+version: '0.1.{build}'
+
+image: Visual Studio 2022
+
+build: off
+
+install:
+  - cmd: python --version
+  - cmd: pip install pyqt6 matplotlib numpy sounddevice scipy pyinstaller
+
+build_script:
+  - cmd: >-
+      pyinstaller --noconfirm --onedir --windowed
+      --name Coherence
+      --hidden-import PyQt6.QtCore
+      --hidden-import PyQt6.QtGui
+      --hidden-import PyQt6.QtWidgets
+      --hidden-import PyQt6.sip
+      --hidden-import matplotlib.backends.backend_qtagg
+      --hidden-import matplotlib.backends.backend_agg
+      --hidden-import scipy.signal
+      --hidden-import scipy.signal._upfirdn_apply
+      --hidden-import sounddevice
+      --exclude-module tkinter
+      --exclude-module wx
+      run_coherence.py
+  - cmd: 7z a Coherence-Windows.zip dist\Coherence\
+
+artifacts:
+  - path: Coherence-Windows.zip
+    name: Coherence-Windows
