@@ -5748,10 +5748,10 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(8)
 
-        # Obtener dispositivos — WASAPI-only en Windows, todos en macOS.
-        # Usar la misma fuente que _populate_devices() para que los IDs coincidan
-        # con _dev_in_ids / _dev_out_ids y el Apply funcione correctamente.
-        all_devs = AudioEngine.list_devices()
+        # Obtener dispositivos — reutilizar la lista cacheada en _populate_devices()
+        # para no llamar sd.query_devices() desde el hilo principal mientras el
+        # stream WASAPI está corriendo (causaría freeze en Windows).
+        all_devs = getattr(self, '_cached_all_devices', None) or AudioEngine.list_devices()
 
         _tbl_ss = (
             f'QTableWidget{{background:#111;color:{TEXT_HI};gridline-color:#2a2a2a;'
@@ -6210,6 +6210,7 @@ class MainWindow(QMainWindow):
 
     def _populate_devices(self):
         devices = AudioEngine.list_devices()
+        self._cached_all_devices = devices   # reutilizado en _show_io_config sin rellamar al API
         self._dev_in_ids    = []
         self._dev_out_ids   = []
         self._dev_noise_ids = []
