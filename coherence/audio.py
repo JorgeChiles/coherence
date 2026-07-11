@@ -637,14 +637,26 @@ class AudioEngine:
                 entry = {
                     'id'      : i,
                     'name'    : d['name'],
-                    'in'      : d['max_input_channels'],
-                    'out'     : d['max_output_channels'],
+                    'in'      : int(d['max_input_channels']),
+                    'out'     : int(d['max_output_channels']),
                     'fs'      : int(d['default_samplerate']),
                     'hostapi' : d.get('hostapi', -1),
                 }
                 result_all.append(entry)
                 if wasapi_idx is not None and d.get('hostapi') == wasapi_idx:
                     result_wasapi.append(entry)
+
+            # Deduplicar por nombre: WASAPI puede exponer el mismo dispositivo
+            # físico varias veces (stereo, multi-canal, loopback, etc.).
+            # Mantenemos el endpoint con más canales totales.
+            seen: dict = {}
+            for entry in result_wasapi:
+                name = entry['name']
+                total = entry['in'] + entry['out']
+                if name not in seen or total > seen[name]['in'] + seen[name]['out']:
+                    seen[name] = entry
+            result_wasapi = list(seen.values())
+
             return result_wasapi if result_wasapi else result_all
 
         result = []

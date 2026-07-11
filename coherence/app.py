@@ -5867,10 +5867,10 @@ class MainWindow(QMainWindow):
             b.setStyleSheet(_btn_ss)
 
         def _apply():
-            was_running = self.engine.running
-            # Aplicar selección
+            # ── Aplicar selección de dispositivos ────────────────────────
             self.engine.dev_in  = _sel['in']
             self.engine.dev_out = _sel['out']
+
             # Actualizar combos de device en la UI principal
             for i, did in enumerate(getattr(self, '_dev_in_ids', [])):
                 if did == _sel['in']:
@@ -5884,19 +5884,33 @@ class MainWindow(QMainWindow):
                     self.cmb_dev_out.setCurrentIndex(i)
                     self.cmb_dev_out.blockSignals(False)
                     break
+
             # Sincronizar Signal Generator Output con el nuevo dev_out
-            devices = AudioEngine.list_devices()
-            out_name = next((d['name'] for d in devices if d['id'] == _sel['out']), 'Output')
+            out_name = next(
+                (d['name'] for d in all_devs if d['id'] == _sel['out']), 'Output')
             self._noise_dev_list = [(_sel['out'], out_name)]
             if hasattr(self, '_btn_noise_out'):
                 short = out_name[:22] + '…' if len(out_name) > 22 else out_name
                 self._btn_noise_out.setText(f'{short} ▾')
-            # Reiniciar stream si estaba activo
-            if was_running:
-                self._safe_restart()
+
+            # ── Parar todo limpiamente ────────────────────────────────────
+            # Cambiar el dispositivo WASAPI en caliente es inestable en Windows.
+            # Detenemos stream, ruido y engines; el usuario reinicia con ▶.
+            self.timer.stop()
+            if self.engine.running:
+                self.engine.stop()
+            self.engine.noise_on = False
+            if hasattr(self, 'btn_noise_p'):
+                self.btn_noise_p.setChecked(False)
+            for eng in getattr(self, '_tf_engines', []):
+                eng._active = False
+                eng.btn_play.setChecked(False)
+                eng.btn_play.setText('▶')
+            self._set_stopped()
+
             self._save_prefs()
             self.sb.showMessage(
-                f'✓  I/O aplicado — In: dev {_sel["in"]}  Out: dev {_sel["out"]}', 4000)
+                '✓  Dispositivo actualizado — presiona ▶ para iniciar', 5000)
             dlg.accept()
 
         btn_apply.clicked.connect(_apply)
