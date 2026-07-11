@@ -1,0 +1,58 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:          # botón manual en GitHub Actions
+  push:
+    tags:
+      - 'v*'                  # se dispara solo cuando haces: git tag v0.1.1 && git push --tags
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install pyqt6 matplotlib numpy sounddevice scipy pyinstaller
+
+      - name: Construir con PyInstaller
+        run: |
+          pyinstaller --noconfirm --onedir --windowed `
+            --name Coherence `
+            --hidden-import PyQt6.QtCore `
+            --hidden-import PyQt6.QtGui `
+            --hidden-import PyQt6.QtWidgets `
+            --hidden-import PyQt6.sip `
+            --hidden-import matplotlib.backends.backend_qtagg `
+            --hidden-import matplotlib.backends.backend_agg `
+            --hidden-import scipy.signal `
+            --hidden-import scipy.signal._upfirdn_apply `
+            --hidden-import sounddevice `
+            --exclude-module tkinter `
+            --exclude-module wx `
+            run_coherence.py
+
+      - name: Comprimir
+        run: |
+          Compress-Archive -Path dist\Coherence -DestinationPath Coherence-Windows.zip
+
+      - name: Subir al release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: Coherence-Windows.zip
+
+      - name: Subir como artefacto (para pruebas manuales)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Coherence-Windows
+          path: Coherence-Windows.zip
+          retention-days: 7
