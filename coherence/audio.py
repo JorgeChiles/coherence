@@ -8,19 +8,26 @@ Generadores disponibles: pink, white, tone, sweep
 """
 
 import os
+import sys
 import contextlib
 import numpy as np
 import threading
 import sounddevice as sd
+
+# En Windows usar latencia alta para evitar freezes con WASAPI
+_IS_WINDOWS = sys.platform == 'win32'
+_LATENCY    = 'high' if _IS_WINDOWS else 'low'
 
 
 @contextlib.contextmanager
 def _suppress_pa_stderr():
     """
     Suprime el ruido de PortAudio/CoreAudio en stderr (macOS).
-    El error 'PaMacCore (AUHAL)... Unspecified Audio Hardware Error'
-    es benigno — PortAudio lo imprime al escanear dispositivos.
+    En Windows se omite el redirect (os.dup2 es inestable con WASAPI).
     """
+    if _IS_WINDOWS:
+        yield
+        return
     try:
         devnull_fd = os.open(os.devnull, os.O_WRONLY)
         old_stderr = os.dup(2)
@@ -554,7 +561,7 @@ class AudioEngine:
                 channels   = n_in,
                 dtype      = 'float32',
                 callback   = self._callback_input_only,
-                latency    = 'low',
+                latency    = _LATENCY,
             )
         else:
             n_out  = min(2, max_out)
@@ -567,7 +574,7 @@ class AudioEngine:
                 channels   = (n_in, n_out),
                 dtype      = 'float32',
                 callback   = self._callback,
-                latency    = 'low',
+                latency    = _LATENCY,
             )
 
         self._stream.start()
@@ -611,8 +618,36 @@ class AudioEngine:
     @staticmethod
     def list_devices():
         with _suppress_pa_stderr():
-            devices = sd.query_devices()
-        result  = []
+            devices   = sd.query_devices()
+            host_apis = sd.query_hostapis()
+
+        if _IS_WINDOWS:
+            # En Windows, cada dispositivo físico aparece múltiples veces:
+            # una por cada Host API (WASAPI, MME, DirectSound, WDM-KS).
+            # Filtramos para mostrar solo la variante WASAPI (la más estable),
+            # o si no hay WASAPI para ese dispositivo, la primera que encontremos.
+            wasapi_idx = next(
+                (i for i, h in enumerate(host_apis) if 'wasapi' in h['name'].lower()),
+                None
+            )
+            # Primero intentamos solo WASAPI; si está vacío, mostramos todo
+            result_wasapi = []
+            result_all    = []
+            for i, d in enumerate(devices):
+                entry = {
+                    'id'      : i,
+                    'name'    : d['name'],
+                    'in'      : d['max_input_channels'],
+                    'out'     : d['max_output_channels'],
+                    'fs'      : int(d['default_samplerate']),
+                    'hostapi' : d.get('hostapi', -1),
+                }
+                result_all.append(entry)
+                if wasapi_idx is not None and d.get('hostapi') == wasapi_idx:
+                    result_wasapi.append(entry)
+            return result_wasapi if result_wasapi else result_all
+
+        result = []
         for i, d in enumerate(devices):
             result.append({
                 'id'  : i,

@@ -2283,7 +2283,7 @@ class TFEngine(QWidget):
         self._color              = color
         self._number             = number
         self._delay_comp_ms      = 0.0
-        self._active             = True
+        self._active             = False   # inicia inactivo; el usuario presiona ▶
         self._selected           = False
         self._on_active_changed  = on_active_changed   # callback(idx, active)
         self._on_color_changed   = on_color_changed    # callback(idx, color_hex)
@@ -2336,7 +2336,7 @@ class TFEngine(QWidget):
         self.btn_play = QPushButton('▶')
         self.btn_play.setFixedSize(26, 22)
         self.btn_play.setCheckable(True)
-        self.btn_play.setChecked(True)
+        self.btn_play.setChecked(False)   # inicia sin marcar (inactivo)
         self.btn_play.setStyleSheet(
             f'QPushButton{{font-size:11px;padding:0;border:none;'
             f'background:transparent;color:{color};}}'
