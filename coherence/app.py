@@ -32,8 +32,20 @@ from PyQt6.QtWidgets import (
     QLineEdit, QSplitter, QStackedWidget, QMenu,
 )
 from PyQt6.QtCore  import Qt, QTimer, QDateTime
-from PyQt6.QtGui   import QFont, QPalette, QColor, QKeySequence, QShortcut
+from PyQt6.QtGui   import QFont, QPalette, QColor, QKeySequence, QShortcut, QAction
 from PyQt6.QtWidgets import QMenuBar
+
+import matplotlib as _mpl_module
+# Deshabilitar TODOS los atajos de teclado de matplotlib para que no bloqueen
+# los QShortcut / event filter de la app (p=pan, s=save, g=grid, r=reset, c=back…)
+for _k in ('keymap.fullscreen', 'keymap.home', 'keymap.back', 'keymap.forward',
+           'keymap.pan', 'keymap.zoom', 'keymap.save', 'keymap.grid',
+           'keymap.grid_minor', 'keymap.yscale', 'keymap.xscale',
+           'keymap.quit', 'keymap.quit_all', 'keymap.all_axes'):
+    try:
+        _mpl_module.rcParams[_k] = []
+    except KeyError:
+        pass
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -426,7 +438,7 @@ def fmt_freq(f_hz):
 class TraceData:
     """Snapshot de una medición para mostrar como referencia estática."""
     def __init__(self, name, color, freqs, mag_db, phase_deg, gamma2, ir,
-                 delay_ref_ms, coh_thresh, lev_x, lev_y):
+                 delay_ref_ms, coh_thresh, lev_x, lev_y, lev_freqs=None):
         self.name          = name
         self.color         = color
         self.visible       = True
@@ -437,8 +449,9 @@ class TraceData:
         self.ir            = ir
         self.delay_ref_ms  = delay_ref_ms
         self.coh_thresh    = coh_thresh
-        self.lev_x         = lev_x   # CPB REF 31 bandas
-        self.lev_y         = lev_y   # CPB MED 31 bandas
+        self.lev_x         = lev_x     # niveles REF (CPB o FFT raw)
+        self.lev_y         = lev_y     # niveles MED (CPB o FFT raw)
+        self.lev_freqs     = lev_freqs  # eje de frecuencias de lev_x/lev_y
 
 
 # ── Fila de una traza en el panel ─────────────────────────────────────
@@ -839,9 +852,10 @@ class MeasurementCanvas(FigureCanvas):
         self._last_ir        = None
         self._fs             = 48000   # actualizado por MainWindow en cada refresh
         # Listas paralelas de líneas matplotlib para trazas almacenadas
-        self._trace_tf_lines: List = []
-        self._trace_ph_lines: List = []
-        self._trace_ir_lines: List = []
+        self._trace_tf_lines:  List = []
+        self._trace_ph_lines:  List = []
+        self._trace_ir_lines:  List = []
+        self._trace_coh_lines: List = []
         self._eng_colors = [ENGINE_PALETTE[0], ENGINE_PALETTE[1]]
         self._build()
         self._build_tf_overlay()
@@ -856,10 +870,10 @@ class MeasurementCanvas(FigureCanvas):
 
         gs = gridspec.GridSpec(
             3, 1, figure=self.fig,
-            hspace=0.16,
+            hspace=0.22,
             left=0.055, right=0.935,
-            top=0.99, bottom=0.07,
-            height_ratios=[0.64, 2.2, 0.85]   # IR doble altura
+            top=0.93, bottom=0.07,
+            height_ratios=[1.1, 2.2, 0.85]    # IR panel más grande
         )
 
         # ── IR ──
@@ -871,11 +885,16 @@ class MeasurementCanvas(FigureCanvas):
         self.ax_ir.axvline(0, color='#2a2a2a', lw=0.7, ls='--')   # referencia fija 0 ms
         self.ax_ir.set_ylabel('amp', fontsize=6, color=TEXT_DIM, labelpad=1)
         self._style_ax(self.ax_ir, log=False)
-        # Eje X en ms — ticks cada 50 ms (mayor) y 25 ms (menor)
+
+        # Eje X tiempo en ms — labels arriba (panel superior, hay espacio libre)
         self.ax_ir.xaxis.set_major_locator(ticker.MultipleLocator(50))
         self.ax_ir.xaxis.set_minor_locator(ticker.MultipleLocator(25))
-        self.ax_ir.tick_params(axis='x', labelsize=7, colors=TEXT_MID)
-        self.ax_ir.set_xlabel('ms', fontsize=7, color=TEXT_MID, labelpad=1)
+        self.ax_ir.tick_params(axis='x', which='both',
+                               top=True, labeltop=True,
+                               bottom=True, labelbottom=False,
+                               labelsize=7, colors=TEXT_MID)
+        self.ax_ir.xaxis.set_label_position('top')
+        self.ax_ir.set_xlabel('ms', fontsize=7, color=TEXT_MID, labelpad=2)
 
         self.line_ir, = self.ax_ir.plot([], [], color=self._eng_colors[0], lw=0.9, alpha=0.90)
         self.line_ir_peak = self.ax_ir.axvline(0, color=ORANGE, lw=1.2, ls='--', alpha=0.8)
@@ -895,9 +914,9 @@ class MeasurementCanvas(FigureCanvas):
 
         self.ax_tf.set_facecolor(BG_PLOT)
         self.ax_tf.set_ylim(-30, 30)
-        # Panel central: grilla de frecuencias SIN labels (Phase los muestra abajo)
+        # Panel central: grilla de frecuencias CON labels (siempre visibles)
         setup_smaart_axis(self.ax_tf, bg=BG_PLOT,
-                          show_xlabels=False, show_xlabel=False)
+                          show_xlabels=True, show_xlabel=False)
         self.ax_tf.set_ylabel('dB', fontsize=7, color=TEXT_MID, labelpad=1)
         # Grilla horizontal cada 6 dB — estilo SMAART
         for _db in range(-24, 25, 6):
@@ -950,7 +969,7 @@ class MeasurementCanvas(FigureCanvas):
 
         self.line_ph,     = self.ax_ph.semilogx(f0, [0, 0], color=self._eng_colors[0], lw=2.2, alpha=1.0)
         self.line_ph2,    = self.ax_ph.semilogx([], [],     color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-')
-        self.line_ph_avg, = self.ax_ph.semilogx([], [],     color=ORANGE, lw=1.2, alpha=0.9,  ls='-')
+        self.line_ph_avg, = self.ax_ph.semilogx([], [],     color='#ffffff', lw=1.8, alpha=0.85, ls='--')
 
         # ── Crosshairs (cursor) — vertical + horizontal por panel ──
         _ck = dict(color=TEXT_MID, lw=0.7, ls=':', alpha=0.0, zorder=20)
@@ -1003,6 +1022,9 @@ class MeasurementCanvas(FigureCanvas):
             self.ax_ph.set_visible(True)
             # Expandir Phase para llenar el canvas
             self.ax_ph.set_position([0.055, 0.07, 0.880, 0.91])
+            # Forzar visibilidad de trazas guardadas en Phase
+            for ln in self._trace_ph_lines:
+                ln.set_visible(True)
 
         else:  # 'full'
             for ax in (self.ax_ir, self.ax_tf, self.ax_coh, self.ax_ph):
@@ -1043,16 +1065,19 @@ class MeasurementCanvas(FigureCanvas):
     def _position_tf_overlay(self):
         """
         Posiciona el botón en la esquina inferior-derecha del panel TF (ax_tf).
-        gridspec: top=0.99, bottom=0.07, height_ratios=[0.32, 2.2, 0.85]
+        En modo phase_only usa ax_ph porque ax_tf está oculto.
         """
         w, h = self.width(), self.height()
         if w < 30 or h < 30:
             return
-        # Leer posición REAL del eje TF (funciona en todos los modos de vista)
         try:
-            pos = self.ax_tf.get_position()   # Bbox en coordenadas de figura [0,1]
-            ax_right  = pos.x1                # borde derecho
-            ax_bottom = pos.y0                # borde inferior (desde abajo)
+            # Si ax_tf está oculto y ax_ph visible → modo phase_only → anclar a Phase
+            if not self.ax_tf.get_visible() and self.ax_ph.get_visible():
+                pos = self.ax_ph.get_position()
+            else:
+                pos = self.ax_tf.get_position()
+            ax_right  = pos.x1   # borde derecho en coord. figura [0,1]
+            ax_bottom = pos.y0   # borde inferior
         except Exception:
             ax_right, ax_bottom = 0.935, 0.302
         rw = max(self._smooth_btn.sizeHint().width(), 84)
@@ -1136,22 +1161,43 @@ class MeasurementCanvas(FigureCanvas):
         self.line_ir_peak.set_color(c0)
         self.draw_idle()
 
-    def highlight_engine(self, idx: int):
+    def highlight_engine(self, idx: int, show_avg: bool = False):
         """
         Destaca el engine seleccionado: TF, Phase e IR del engine activo
-        se ven en primer plano; el resto se atenúa.
+        se ven en primer plano; el resto se atenúa levemente.
+        Cuando show_avg=True el promedio domina visualmente sobre todos los engines.
         """
+        if not self._eng_colors:
+            self.draw_idle()
+            return
+
         pairs_tf = [(self.line_tf,  self.line_ph,  0),
                     (self.line_tf2, self.line_ph2, 1)]
-        for ltf, lph, i in pairs_tf:
-            if i == idx:
-                # Engine seleccionado — línea gruesa, opaca
-                ltf.set(linewidth=2.2, alpha=1.0, zorder=5)
-                lph.set(linewidth=2.2, alpha=1.0, zorder=5)
-            else:
-                # Engine en segundo plano — delgado y muy transparente
-                ltf.set(linewidth=0.8, alpha=0.20, zorder=2)
-                lph.set(linewidth=0.8, alpha=0.20, zorder=2)
+
+        if show_avg:
+            # Con AVG activo: engines en segundo plano, AVG domina
+            for ltf, lph, i in pairs_tf:
+                if i == idx:
+                    ltf.set(linewidth=1.8, alpha=0.80, zorder=4)
+                    lph.set(linewidth=1.8, alpha=0.80, zorder=4)
+                else:
+                    ltf.set(linewidth=1.1, alpha=0.55, zorder=3)
+                    lph.set(linewidth=1.1, alpha=0.55, zorder=3)
+            # AVG encima de todo — línea gruesa, totalmente opaca
+            self.line_tf_avg.set(linewidth=2.6, alpha=1.0, zorder=6)
+            self.line_ph_avg.set(linewidth=2.6, alpha=1.0, zorder=6)
+        else:
+            # Sin AVG: engine seleccionado en primer plano, resto visible pero subordinado
+            for ltf, lph, i in pairs_tf:
+                if i == idx:
+                    ltf.set(linewidth=2.2, alpha=1.0, zorder=5)
+                    lph.set(linewidth=2.2, alpha=1.0, zorder=5)
+                else:
+                    ltf.set(linewidth=1.2, alpha=0.65, zorder=3)
+                    lph.set(linewidth=1.2, alpha=0.65, zorder=3)
+            # AVG oculto visualmente (los datos ya se limpian en _toggle_avg)
+            self.line_tf_avg.set(linewidth=1.6, alpha=0.0, zorder=2)
+            self.line_ph_avg.set(linewidth=1.6, alpha=0.0, zorder=2)
 
         # IR usa el color del engine seleccionado y queda en primer plano
         color = self._eng_colors[idx] if idx < len(self._eng_colors) else self._eng_colors[0]
@@ -1197,30 +1243,21 @@ class MeasurementCanvas(FigureCanvas):
         # Máscara de blanqueo (siempre sobre γ²)
         ok = gamma2[mask] >= coh_thresh
 
-        # Phase — con unwrap y/o group delay
+        # Phase — sin gate de coherencia (se muestra siempre el rango completo)
+        # La coherencia baja se distingue visualmente por el color/alpha de la curva,
+        # no por blanquear puntos individuales (igual que SMAART en modo Phase).
         if phase_as_gd:
-            # Retardo de grupo = -dφ/dω  (ms)
-            ph_rad  = np.unwrap(phase_deg[mask] * np.pi / 180.0)
-            omega   = 2.0 * np.pi * f
-            gd_ms   = -np.gradient(ph_rad, omega) * 1000.0
-            # Limitar a ±500 ms para evitar spikes numéricos
-            gd_ms   = np.clip(gd_ms, -500.0, 500.0)
-            gd_ok   = gd_ms[ok]
-            if ok.sum() > 2:
-                self.line_ph.set_data(f[ok], gd_ok)
-            else:
-                self.line_ph.set_data([], [])
+            ph_rad = np.unwrap(phase_deg[mask] * np.pi / 180.0)
+            omega  = 2.0 * np.pi * f
+            gd_ms  = -np.gradient(ph_rad, omega) * 1000.0
+            gd_ms  = np.clip(gd_ms, -500.0, 500.0)
+            self.line_ph.set_data(f, gd_ms)
         else:
             if unwrap_phase:
-                ph_rad  = np.unwrap(phase_deg[mask] * np.pi / 180.0) * 180.0 / np.pi
-                ph_data = ph_rad[ok]
+                ph_data = np.unwrap(phase_deg[mask] * np.pi / 180.0) * 180.0 / np.pi
             else:
-                ph_wrap = ((phase_deg[mask][ok] + 180.0) % 360.0) - 180.0
-                ph_data = ph_wrap
-            if ok.sum() > 2:
-                self.line_ph.set_data(f[ok], ph_data)
-            else:
-                self.line_ph.set_data([], [])
+                ph_data = ((phase_deg[mask] + 180.0) % 360.0) - 180.0
+            self.line_ph.set_data(f, ph_data)
 
         # IR — dos modos controlados por _ir_centered:
         #   False (raw)      → eje de tiempo real; pico en su posición física
@@ -1269,12 +1306,9 @@ class MeasurementCanvas(FigureCanvas):
         mask = (freqs >= 20) & (freqs <= 20000)
         f    = freqs[mask]
         self.line_tf2.set_data(f, mag_db[mask])
-        ok = gamma2[mask] >= coh_thresh
-        if ok.sum() > 2:
-            ph_wrap = ((phase_deg[mask][ok] + 180.0) % 360.0) - 180.0
-            self.line_ph2.set_data(f[ok], ph_wrap)
-        else:
-            self.line_ph2.set_data([], [])
+        # Phase sin gate de coherencia — se muestra completa
+        ph_wrap = ((phase_deg[mask] + 180.0) % 360.0) - 180.0
+        self.line_ph2.set_data(f, ph_wrap)
 
     def update_avg(self, freqs, mag_db_avg, phase_deg_avg, gamma2, coh_thresh=0.5):
         """Actualiza la línea de promedio CH1+CH2."""
@@ -1285,12 +1319,9 @@ class MeasurementCanvas(FigureCanvas):
         mask = (freqs >= 20) & (freqs <= 20000)
         f    = freqs[mask]
         self.line_tf_avg.set_data(f, mag_db_avg[mask])
-        ok = gamma2[mask] >= coh_thresh
-        if ok.sum() > 2:
-            ph_wrap = ((phase_deg_avg[mask][ok] + 180.0) % 360.0) - 180.0
-            self.line_ph_avg.set_data(f[ok], ph_wrap)
-        else:
-            self.line_ph_avg.set_data([], [])
+        # Phase sin gate de coherencia — promedio siempre completo
+        ph_wrap = ((phase_deg_avg[mask] + 180.0) % 360.0) - 180.0
+        self.line_ph_avg.set_data(f, ph_wrap)
 
     def update_ir_range(self, ms):
         """Cambia el rango visible ±ms/2. El eje siempre es simétrico alrededor de 0."""
@@ -1404,15 +1435,17 @@ class MeasurementCanvas(FigureCanvas):
             f, mag_db[mask], color=color, lw=1.0, alpha=0.70, ls='--', zorder=2)
         self._trace_tf_lines.append(line_tf)
 
-        # Phase envuelta (solo donde γ² >= thresh)
-        ok = gamma2[mask] >= coh_thresh
-        if ok.sum() > 2:
-            ph_wrap = ((phase_deg[mask][ok] + 180.0) % 360.0) - 180.0
-            line_ph, = self.ax_ph.semilogx(
-                f[ok], ph_wrap, color=color, lw=1.0, alpha=0.70, ls='--', zorder=2)
-        else:
-            line_ph, = self.ax_ph.semilogx([], [], color=color, lw=1.0, ls='--')
+        # Phase envuelta completa — sin gate de coherencia (se dibuja siempre)
+        ph_wrap = ((phase_deg[mask] + 180.0) % 360.0) - 180.0
+        line_ph, = self.ax_ph.semilogx(
+            f, ph_wrap, color=color, lw=1.0, alpha=0.70, ls='--', zorder=2)
         self._trace_ph_lines.append(line_ph)
+
+        # Coherencia γ² — línea punteada sobre ax_coh
+        coh_vals = gamma2[mask].clip(0.0, 1.0)
+        line_coh, = self.ax_coh.semilogx(
+            f, coh_vals, color=color, lw=0.8, alpha=0.55, ls=':', zorder=3)
+        self._trace_coh_lines.append(line_coh)
 
         # IR
         if ir is not None and len(ir) > 0:
@@ -1435,16 +1468,22 @@ class MeasurementCanvas(FigureCanvas):
     def remove_trace(self, idx):
         """Elimina la traza en posición idx de todos los paneles."""
         if 0 <= idx < len(self._trace_tf_lines):
-            for lst in (self._trace_tf_lines, self._trace_ph_lines, self._trace_ir_lines):
-                lst[idx].remove()
-                lst.pop(idx)
+            _all = (self._trace_tf_lines, self._trace_ph_lines,
+                    self._trace_coh_lines, self._trace_ir_lines)
+            for lst in _all:
+                if idx < len(lst):
+                    lst[idx].remove()
+                    lst.pop(idx)
             self.draw_idle()
 
     def set_trace_visible(self, idx, visible):
         """Muestra u oculta la traza idx en todos los paneles."""
         if 0 <= idx < len(self._trace_tf_lines):
-            for lst in (self._trace_tf_lines, self._trace_ph_lines, self._trace_ir_lines):
-                lst[idx].set_visible(visible)
+            _all = (self._trace_tf_lines, self._trace_ph_lines,
+                    self._trace_coh_lines, self._trace_ir_lines)
+            for lst in _all:
+                if idx < len(lst):
+                    lst[idx].set_visible(visible)
             self.draw_idle()
 
     def clear(self):
@@ -1798,9 +1837,16 @@ class SpectrumCanvas(FigureCanvas):
 
     # ── Trazas almacenadas ────────────────────────────────────────────
 
-    def store_trace(self, lev_x, lev_y, color):
+    def store_trace(self, lev_x, lev_y, color, lev_freqs=None):
         """Dibuja trazas REF (--) y MED (:) como referencia estática."""
-        fc = self._centers
+        # Usar el eje de frecuencias guardado con la traza; fallback a _centers
+        if lev_freqs is not None and len(lev_freqs) == len(lev_x):
+            fc = lev_freqs
+        else:
+            fc = self._centers
+        # Truncar al mínimo para evitar shape mismatch
+        n = min(len(fc), len(lev_x), len(lev_y))
+        fc, lev_x, lev_y = fc[:n], lev_x[:n], lev_y[:n]
         line_x, = self.ax.semilogx(
             fc, lev_x, color=color, lw=1.0, alpha=0.70, ls='--', zorder=2)
         line_y, = self.ax.semilogx(
@@ -2231,14 +2277,16 @@ class TFEngine(QWidget):
 
     def __init__(self, number: int, color: str,
                  on_channels_changed, on_remove, on_find_delay,
-                 on_select=None, on_normalize=None,
-                 parent=None):
+                 on_select=None, on_normalize=None, on_active_changed=None,
+                 on_color_changed=None, parent=None):
         super().__init__(parent)
-        self._color          = color
-        self._number         = number
-        self._delay_comp_ms  = 0.0
-        self._active         = True
-        self._selected       = False
+        self._color              = color
+        self._number             = number
+        self._delay_comp_ms      = 0.0
+        self._active             = True
+        self._selected           = False
+        self._on_active_changed  = on_active_changed   # callback(idx, active)
+        self._on_color_changed   = on_color_changed    # callback(idx, color_hex)
         self._gain_offset_db = 0.0
         self._on_select_cb   = on_select
         self._on_norm_cb     = on_normalize
@@ -2264,10 +2312,17 @@ class TFEngine(QWidget):
         # ── Fila 1: ● color  N  |  ▶  ✕ ─────────────────────────────
         r1 = QHBoxLayout(); r1.setSpacing(6)
 
-        # Círculo de color
-        dot = QLabel('●')
+        # Círculo de color — clickeable para abrir color picker
+        dot = QPushButton('●')
         dot.setStyleSheet(
-            f'color:{color};font-size:18px;background:transparent;')
+            f'QPushButton{{color:{color};font-size:18px;background:transparent;'
+            f'border:none;padding:0;margin:0;}}'
+            f'QPushButton:hover{{color:#ffffff;}}')
+        dot.setFixedSize(22, 22)
+        dot.setCursor(Qt.CursorShape.PointingHandCursor)
+        dot.setToolTip('Cambiar color del engine')
+        dot.clicked.connect(self._on_pick_color)
+        self._dot = dot
         r1.addWidget(dot)
 
         # Número
@@ -2384,11 +2439,52 @@ class TFEngine(QWidget):
 
     def _on_toggle_active(self, checked: bool):
         self._active = checked
-        self.btn_play.setText('▶' if checked else '⏸')
+        # Sync button visual state (in case called directly instead of via click)
+        self.btn_play.setChecked(checked)
+        self.btn_play.setText('⏸' if checked else '▶')
+        if self._on_active_changed is not None:
+            self._on_active_changed(self._number - 1, checked)   # idx=0-based
 
     def _on_body_click(self):
         if self._on_select_cb:
             self._on_select_cb()
+
+    def _on_pick_color(self):
+        """Abre QColorDialog para que el usuario elija el color del engine."""
+        from PyQt6.QtWidgets import QColorDialog
+        from PyQt6.QtGui import QColor as _QColor
+        c = QColorDialog.getColor(_QColor(self._color), self, 'Color del Engine')
+        if c.isValid():
+            self._apply_color(c.name())
+            if self._on_color_changed is not None:
+                self._on_color_changed(self._number - 1, c.name())
+
+    def _apply_color(self, color: str):
+        """Actualiza todos los elementos visuales del engine con el nuevo color."""
+        self._color = color
+        # Dot
+        self._dot.setStyleSheet(
+            f'QPushButton{{color:{color};font-size:18px;background:transparent;'
+            f'border:none;padding:0;margin:0;}}'
+            f'QPushButton:hover{{color:#ffffff;}}')
+        # Card — respeta si está seleccionado o no
+        if self._selected:
+            self._card.setStyleSheet(
+                f'QFrame#tfcard{{background:#1c2222;border:2px solid {color};'
+                f'border-radius:6px;}}')
+        else:
+            self._card.setStyleSheet(
+                f'QFrame#tfcard{{background:#161919;border:2px solid {color}55;'
+                f'border-radius:6px;}}')
+        # Barra M y botón play
+        self.bar_m.setStyleSheet(
+            f'QProgressBar{{background:#222;border:none;border-radius:2px;}}'
+            f'QProgressBar::chunk{{background:{color};border-radius:2px;}}')
+        self.btn_play.setStyleSheet(
+            f'QPushButton{{font-size:11px;padding:0;border:none;'
+            f'background:transparent;color:{color};}}'
+            f'QPushButton:checked{{color:{color};}}'
+            f'QPushButton:!checked{{color:#444444;}}')
 
     def set_selected(self, selected: bool):
         self._selected = selected
@@ -2397,7 +2493,6 @@ class TFEngine(QWidget):
                 f'QFrame#tfcard{{background:#1c2222;border:2px solid {self._color};'
                 f'border-radius:6px;}}')
         else:
-            # Borde atenuado cuando no está seleccionado
             self._card.setStyleSheet(
                 f'QFrame#tfcard{{background:#161919;border:2px solid {self._color}55;'
                 f'border-radius:6px;}}')
@@ -2705,7 +2800,7 @@ class MainWindow(QMainWindow):
         _ws_lay.addWidget(self._ws_tab_bar, stretch=1)
         _ws_lay.addWidget(_ws_add_btn)
 
-        cv.addWidget(_ws_row)
+        # _ws_row se agrega al tope del panel derecho (ver _build_settings)
         cv.addWidget(self._panel_splitter, stretch=1)
         root.addWidget(center, stretch=1)
 
@@ -2882,18 +2977,6 @@ class MainWindow(QMainWindow):
         ))
 
         v.addWidget(sep())
-
-        for label, tip, fn in [
-            ('SAVE  IR',    'Guardar Impulse Response como .txt',  self._save_ir_txt),
-            ('SAVE  TF',    'Guardar Transfer Function como .txt', self._save_tf_txt),
-            ('SAVE  PHASE', 'Guardar Phase como .txt',             self._save_ph_txt),
-        ]:
-            btn = QPushButton(label)
-            btn.setToolTip(tip)
-            btn.setMinimumHeight(28)
-            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            btn.clicked.connect(fn)
-            v.addWidget(btn)
 
         # ── Sección TRAZAS TF ─────────────────────────────────────────
         v.addWidget(sep())
@@ -3075,6 +3158,12 @@ class MainWindow(QMainWindow):
         ov.setContentsMargins(0, 0, 0, 0)
         ov.setSpacing(0)
 
+        # ── Workspace tabs (tope del panel derecho) ───────────────────
+        if hasattr(self, '_ws_row'):
+            self._ws_row.setStyleSheet(
+                f'background:{BG_SETTINGS};border-bottom:1px solid {BORDER};')
+            ov.addWidget(self._ws_row)
+
         # ── SPL fijo arriba ───────────────────────────────────────────
         spl_container = QWidget()
         spl_container.setStyleSheet(f'background:{BG_SETTINGS};')
@@ -3150,10 +3239,8 @@ class MainWindow(QMainWindow):
     # ── View block ────────────────────────────────────────────────────
 
     def _build_view_block(self, layout):
-        """Panel View estilo SMAART — presets de vista + Capture."""
+        """Panel View colapsable — se abre/cierra con el botón View."""
 
-        _ss_hdr = (f'color:{TEXT_HI};font-size:11px;font-weight:bold;'
-                   f'background:transparent;letter-spacing:1px;')
         _ss_key = (f'QPushButton{{background:#252525;color:{TEXT_MID};'
                    f'border:1px solid #333;border-radius:3px;'
                    f'font-size:10px;font-weight:bold;min-width:20px;'
@@ -3170,23 +3257,40 @@ class MainWindow(QMainWindow):
                    f'QPushButton:checked{{background:#2a3a2a;color:{GREEN};'
                    f'border-color:{GREEN};}}'
                    f'QPushButton:hover{{border-color:{GREEN};}}')
+        _ss_ico = (f'QPushButton{{background:#1a1a1a;color:{TEXT_MID};'
+                   f'border:1px solid #333;border-radius:3px;font-size:9px;'
+                   f'padding:2px;}}'
+                   f'QPushButton:hover{{background:#222;border-color:#555;}}')
 
+        # ── Outer frame (siempre visible) ─────────────────────────────
         frame = QFrame()
         frame.setStyleSheet(
             f'QFrame{{background:#161616;border:1px solid #2a2a2a;border-radius:5px;}}')
         fv = QVBoxLayout(frame)
-        fv.setContentsMargins(8, 6, 8, 6)
-        fv.setSpacing(5)
+        fv.setContentsMargins(6, 4, 6, 4)
+        fv.setSpacing(4)
 
-        # ── Header ────────────────────────────────────────────────────
-        hdr = QLabel('View')
-        hdr.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hdr.setStyleSheet(
-            f'color:{TEXT_HI};font-size:12px;font-weight:bold;background:transparent;'
-            f'border-bottom:1px solid #252525;padding-bottom:4px;')
-        fv.addWidget(hdr)
+        # ── Toggle button "View" (header siempre visible) ─────────────
+        btn_toggle = QPushButton('▶  View')
+        btn_toggle.setCheckable(True)
+        btn_toggle.setChecked(False)   # empieza cerrado
+        btn_toggle.setFixedHeight(26)
+        btn_toggle.setStyleSheet(
+            f'QPushButton{{background:#1a1a1a;color:{TEXT_MID};'
+            f'border:none;border-radius:4px;'
+            f'font-size:11px;font-weight:bold;text-align:left;padding:0 8px;}}'
+            f'QPushButton:checked{{color:{GREEN};}}'
+            f'QPushButton:hover{{color:{TEXT_HI};background:#222;}}')
+        fv.addWidget(btn_toggle)
 
-        # ── Tab: workspace selector ───────────────────────────────────
+        # ── Content widget (colapsable) ───────────────────────────────
+        content = QWidget()
+        content.setVisible(False)   # empieza oculto
+        cv = QVBoxLayout(content)
+        cv.setContentsMargins(2, 2, 2, 2)
+        cv.setSpacing(5)
+
+        # Tab: workspace selector
         tab_row = QHBoxLayout(); tab_row.setSpacing(4)
         tab_lbl = QLabel('Tab:')
         tab_lbl.setStyleSheet(f'color:{TEXT_MID};font-size:10px;background:transparent;')
@@ -3199,22 +3303,14 @@ class MainWindow(QMainWindow):
             f'border:1px solid #333;border-radius:3px;padding:0 4px;')
         tab_row.addWidget(tab_lbl)
         tab_row.addWidget(self._cmb_view_tab, stretch=1)
-        fv.addLayout(tab_row)
+        cv.addLayout(tab_row)
 
-        # ── Layout icons row 1: Single | Split-H | Live IR ────────────
-        ico_row1 = QHBoxLayout(); ico_row1.setSpacing(3)
-
-        _ss_ico = (f'QPushButton{{background:#1a1a1a;color:{TEXT_MID};'
-                   f'border:1px solid #333;border-radius:3px;font-size:9px;'
-                   f'padding:2px;}}'
-                   f'QPushButton:hover{{background:#222;border-color:#555;}}')
-
-        # Mini-iconos de layout — representaciones en texto
-        ico_single = QPushButton('▣');    ico_single.setFixedSize(28, 22)
-        ico_split  = QPushButton('▤');    ico_split.setFixedSize(28, 22)
+        # Layout icons + Live IR
+        ico_row = QHBoxLayout(); ico_row.setSpacing(3)
+        ico_single = QPushButton('▣'); ico_single.setFixedSize(28, 22)
+        ico_split  = QPushButton('▤'); ico_split.setFixedSize(28, 22)
         for b in (ico_single, ico_split):
             b.setStyleSheet(_ss_ico)
-            b.setToolTip('Single view')
 
         btn_live_ir = QPushButton('Live IR')
         btn_live_ir.setCheckable(True)
@@ -3223,31 +3319,30 @@ class MainWindow(QMainWindow):
         btn_live_ir.setStyleSheet(_ss_ir)
         btn_live_ir.clicked.connect(lambda checked: self._toggle_ir_panel())
 
-        ico_row1.addWidget(ico_single)
-        ico_row1.addWidget(ico_split)
-        ico_row1.addStretch()
-        ico_row1.addWidget(btn_live_ir)
-        fv.addLayout(ico_row1)
-
-        # Guardar ref para sincronizar estado
         if not hasattr(self, '_btn_live_ir_list'):
             self._btn_live_ir_list = []
         self._btn_live_ir_list.append(btn_live_ir)
 
-        # ── Presets ───────────────────────────────────────────────────
+        ico_row.addWidget(ico_single)
+        ico_row.addWidget(ico_split)
+        ico_row.addStretch()
+        ico_row.addWidget(btn_live_ir)
+        cv.addLayout(ico_row)
+
+        # Separador "Presets"
         sep_row = QHBoxLayout(); sep_row.setSpacing(4)
         sep_l = QFrame(); sep_l.setFrameShape(QFrame.Shape.HLine)
         sep_r = QFrame(); sep_r.setFrameShape(QFrame.Shape.HLine)
-        for s in (sep_l, sep_r): s.setStyleSheet(f'color:#333;')
+        for s in (sep_l, sep_r): s.setStyleSheet('color:#333;')
         sep_lbl = QLabel('Presets')
         sep_lbl.setStyleSheet(
             f'color:{TEXT_MID};font-size:9px;background:transparent;')
         sep_row.addWidget(sep_l, stretch=1)
         sep_row.addWidget(sep_lbl)
         sep_row.addWidget(sep_r, stretch=1)
-        fv.addLayout(sep_row)
+        cv.addLayout(sep_row)
 
-        # Definición: (shortcut_label, display_name, acción)
+        # Lista de presets
         _PRESETS = [
             ('S', 'Spectrum',             lambda: self._on_view_mode_changed('Spectrum')),
             ('T', 'Transfer Function',    lambda: self._on_view_mode_changed('Magnitude')),
@@ -3277,23 +3372,31 @@ class MainWindow(QMainWindow):
                 lbl.mousePressEvent = lambda e, a=action: a()
             row.addWidget(btn_k)
             row.addWidget(lbl, stretch=1)
-            fv.addLayout(row)
+            cv.addLayout(row)
 
-        # ── Capture / Manage ──────────────────────────────────────────
+        # Capture / Manage
         bot = QHBoxLayout(); bot.setSpacing(4)
         btn_capture = QPushButton('Capture')
         btn_manage  = QPushButton('Manage')
         for b in (btn_capture, btn_manage):
             b.setFixedHeight(24)
             b.setStyleSheet(_ss_btn)
-        btn_capture.clicked.connect(self._save_trace)
+        btn_capture.clicked.connect(self._capture_trace_dialog)
         btn_manage.clicked.connect(
             lambda: self.sb.showMessage('Manage traces — próximamente', 2000))
         bot.addWidget(btn_capture, stretch=1)
         bot.addWidget(btn_manage, stretch=1)
-        fv.addLayout(bot)
+        cv.addLayout(bot)
 
+        fv.addWidget(content)
         layout.addWidget(frame)
+
+        # ── Toggle logic ──────────────────────────────────────────────
+        def _toggle_view(checked):
+            content.setVisible(checked)
+            btn_toggle.setText('▼  View' if checked else '▶  View')
+
+        btn_toggle.toggled.connect(_toggle_view)
 
         # Poblar workspace tabs
         self._refresh_view_tab_combo()
@@ -3577,12 +3680,11 @@ class MainWindow(QMainWindow):
         avg_row = QHBoxLayout(); avg_row.setSpacing(6)
         avg_row.addWidget(lbl('Averaging Depth:', color=TEXT_MID, size=10))
         self.cmb_avg = QComboBox()
-        self._avg_values = [1, 2, 4, 6, 8, 12, 16, 32]
+        self._avg_values = [1, 4, 8, 16, 32]
         for v in self._avg_values: self.cmb_avg.addItem(str(v))
-        self.cmb_avg.setCurrentIndex(3)   # 6 por defecto
+        self.cmb_avg.setCurrentIndex(2)   # 8 por defecto
         self.cmb_avg.setFixedWidth(52)
-        self.cmb_avg.currentIndexChanged.connect(
-            lambda i: setattr(self.engine, 'n_averages', self._avg_values[i]))
+        self.cmb_avg.currentIndexChanged.connect(self._on_avg_changed)
         avg_row.addWidget(self.cmb_avg)
         layout.addLayout(avg_row)
 
@@ -3679,6 +3781,13 @@ class MainWindow(QMainWindow):
             self.btn_show_avg.setStyleSheet(_avg_on_style if checked else _avg_off_style)
             if not checked:
                 self.canvas_meas.update_avg(None, None, None, None)
+                if self._secondary_panel is not None:
+                    self._secondary_panel.canvas_meas.update_avg(None, None, None, None)
+            # Re-aplicar jerarquía visual con nuevo estado de AVG
+            idx = getattr(self, '_selected_engine_idx', 0)
+            self.canvas_meas.highlight_engine(idx, show_avg=checked)
+            if self._secondary_panel is not None:
+                self._secondary_panel.canvas_meas.highlight_engine(idx, show_avg=checked)
         self.btn_show_avg.clicked.connect(_toggle_avg)
         layout.addWidget(self.btn_show_avg)
 
@@ -4073,9 +4182,13 @@ class MainWindow(QMainWindow):
         def _on_fd(): self._on_find_delay_for_engine(self._tf_engines.index(eng))
         def _on_sel(): self._select_engine(self._tf_engines.index(eng))
         def _on_nrm(): self._normalize_engine(self._tf_engines.index(eng))
+        def _on_act(ei, active): self._on_engine_active_changed(ei, active)
+        def _on_col(ei, col): self._on_engine_color_changed(ei, col)
 
         eng = TFEngine(idx + 1, color, _on_ch, _on_rm, _on_fd,
-                       on_select=_on_sel, on_normalize=_on_nrm, parent=None)
+                       on_select=_on_sel, on_normalize=_on_nrm,
+                       on_active_changed=_on_act, on_color_changed=_on_col,
+                       parent=None)
         eng.spn_m.setValue(ch_m)
         eng.spn_r.setValue(ch_r)
 
@@ -4110,7 +4223,8 @@ class MainWindow(QMainWindow):
         colors = [e._color for e in self._tf_engines]
         self.canvas_meas.set_engine_colors(colors)
         self.canvas_meas.highlight_engine(
-            min(getattr(self, '_selected_engine_idx', 0), len(self._tf_engines) - 1))
+            min(getattr(self, '_selected_engine_idx', 0), len(self._tf_engines) - 1),
+            show_avg=self._show_avg)
 
         return eng
 
@@ -4422,7 +4536,7 @@ class MainWindow(QMainWindow):
         if self._tf_engines:
             colors = [e._color for e in self._tf_engines]
             self.canvas_meas.set_engine_colors(colors)
-            self.canvas_meas.highlight_engine(0)
+            self.canvas_meas.highlight_engine(0, show_avg=self._show_avg)
             self._selected_engine_idx = 0
 
     def _ws_add_new(self, name: str = ''):
@@ -5111,7 +5225,10 @@ class MainWindow(QMainWindow):
             _colors = [e._color for e in self._tf_engines]
             self.canvas_meas.set_engine_colors(_colors)
             self.canvas_meas.highlight_engine(
-                getattr(self, '_selected_engine_idx', 0))
+                getattr(self, '_selected_engine_idx', 0),
+                show_avg=self._show_avg)
+            # draw() síncrono para asegurar que las trazas guardadas aparezcan
+            self.canvas_meas.draw()
 
         elif mode == 'Spectrum':
             self._wrap_spec.setVisible(True)
@@ -5141,12 +5258,17 @@ class MainWindow(QMainWindow):
 
     def _on_add_panel(self):
         """Agrega o elimina el panel secundario (split view)."""
+        _SECONDARY_H = 240  # altura fija del panel secundario (px)
+
         if self._secondary_panel is not None:
-            # Quitar panel secundario
+            # Quitar panel secundario — restaurar tamaño de ventana
+            sec_h = self._secondary_panel.height()
             self._secondary_panel.setParent(None)
             self._secondary_panel.deleteLater()
             self._secondary_panel = None
-            # Actualizar icono "+" → "＋" (sin cambios, solo toggle visual)
+            # Encoger ventana de vuelta
+            new_h = max(self.height() - sec_h - self._panel_splitter.handleWidth(), 400)
+            self.resize(self.width(), new_h)
             return
 
         # Crear panel secundario
@@ -5157,9 +5279,16 @@ class MainWindow(QMainWindow):
         self._secondary_panel.canvas_sgram.on_cursor_update = self._update_cursor
         # Agregar al splitter
         self._panel_splitter.addWidget(self._secondary_panel)
-        # Dividir espacio equitativamente
-        h = self._panel_splitter.height()
-        self._panel_splitter.setSizes([max(h // 2, 200), max(h // 2, 200)])
+
+        # Expandir la ventana hacia abajo para no encoger el panel principal
+        main_h  = self._main_area.height()
+        gap     = self._panel_splitter.handleWidth()
+        self.resize(self.width(), self.height() + _SECONDARY_H + gap)
+
+        # Fijar tamaños después de que la ventana se repinte
+        from PyQt6.QtCore import QTimer as _QT
+        _QT.singleShot(0, lambda: self._panel_splitter.setSizes(
+            [main_h, _SECONDARY_H]))
 
     def _on_ir_display_mode(self, mode: str):
         """Dropdown del panel IR: Lin / Log / Normalize."""
@@ -5441,10 +5570,76 @@ class MainWindow(QMainWindow):
         self._selected_engine_idx = idx
         for i, eng in enumerate(self._tf_engines):
             eng.set_selected(i == idx)
-        # Sincronizar colores y destacar en el canvas
+        # Sincronizar colores y destacar en canvas principal Y secundario
         colors = [eng._color for eng in self._tf_engines]
         self.canvas_meas.set_engine_colors(colors)
-        self.canvas_meas.highlight_engine(idx)
+        self.canvas_meas.highlight_engine(idx, show_avg=self._show_avg)
+        if self._secondary_panel is not None:
+            cm2 = self._secondary_panel.canvas_meas
+            cm2.set_engine_colors(colors)
+            cm2.highlight_engine(idx, show_avg=self._show_avg)
+
+    def _on_engine_active_changed(self, idx: int, active: bool):
+        """
+        Callback del ▶/⏸ por engine.
+        - Activar (▶): abre el stream si no está corriendo, inicia el timer.
+        - Pausar (⏸): limpia las líneas de ese engine. Los otros siguen midiendo.
+        """
+        def _clear_eng(canvas, i):
+            if i == 0:
+                canvas.line_tf.set_data([], [])
+                canvas.line_ph.set_data([], [])
+                canvas.line_ir.set_data([], [])
+                canvas.line_ir_peak.set_xdata([0, 0])
+            elif i == 1:
+                canvas.line_tf2.set_data([], [])
+                canvas.line_ph2.set_data([], [])
+            canvas.draw_idle()
+
+        if active:
+            # ── El engine quiere medir → asegurar que el stream esté corriendo ──
+            if not self.engine.running:
+                try:
+                    self.engine.start()
+                except Exception as exc:
+                    # Si el stream no pudo arrancar, revertir el botón
+                    if idx < len(self._tf_engines):
+                        self._tf_engines[idx]._active = False
+                        self._tf_engines[idx].btn_play.setChecked(False)
+                        self._tf_engines[idx].btn_play.setText('▶')
+                    self.sb.showMessage(f'⚠  Error al abrir stream: {exc}', 8000)
+                    return
+            if not self.timer.isActive():
+                self.timer.start()
+                self._silent_ticks = 0
+                QTimer.singleShot(3000, self._check_signal_present)
+            self._set_running()   # actualizar UI del botón principal
+        else:
+            # ── El engine se pausa → limpiar sus líneas ──
+            _clear_eng(self.canvas_meas, idx)
+            if self._secondary_panel is not None:
+                _clear_eng(self._secondary_panel.canvas_meas, idx)
+            self.canvas_meas.update_avg(None, None, None, None)
+            if self._secondary_panel is not None:
+                self._secondary_panel.canvas_meas.update_avg(None, None, None, None)
+            # Si TODOS los engines están en pausa, detener el timer (pero no el stream)
+            if not any(eng.active for eng in self._tf_engines):
+                self.timer.stop()
+                self._set_stopped()
+
+    def _on_engine_color_changed(self, idx: int, color: str):
+        """Callback del color picker del engine — sincroniza canvas y paneles."""
+        colors = [eng._color for eng in self._tf_engines]
+        self.canvas_meas.set_engine_colors(colors)
+        self.canvas_meas.highlight_engine(
+            getattr(self, '_selected_engine_idx', 0),
+            show_avg=self._show_avg)
+        if self._secondary_panel is not None:
+            cm2 = self._secondary_panel.canvas_meas
+            cm2.set_engine_colors(colors)
+            cm2.highlight_engine(
+                getattr(self, '_selected_engine_idx', 0),
+                show_avg=self._show_avg)
 
     def _normalize_engine(self, idx: int):
         """
@@ -5656,6 +5851,13 @@ class MainWindow(QMainWindow):
                     self.cmb_dev_out.setCurrentIndex(i)
                     self.cmb_dev_out.blockSignals(False)
                     break
+            # Sincronizar Signal Generator Output con el nuevo dev_out
+            devices = AudioEngine.list_devices()
+            out_name = next((d['name'] for d in devices if d['id'] == _sel['out']), 'Output')
+            self._noise_dev_list = [(_sel['out'], out_name)]
+            if hasattr(self, '_btn_noise_out'):
+                short = out_name[:22] + '…' if len(out_name) > 22 else out_name
+                self._btn_noise_out.setText(f'{short} ▾')
             # Reiniciar stream si estaba activo
             if was_running:
                 self._safe_restart()
@@ -5695,90 +5897,88 @@ class MainWindow(QMainWindow):
         mb = self.menuBar()
         mb.setStyleSheet(mb_style)
 
-        # ── FILE ─────────────────────────────────────────────────────
-        fm = mb.addMenu('File')
-        fm.addAction('Save Workspace',  self._save_workspace_explicit).setShortcut('Ctrl+Shift+W')
+        # ── ARCHIVO ───────────────────────────────────────────────────
+        fm = mb.addMenu('Archivo')
+        fm.addAction('Guardar Workspace',    self._save_workspace_explicit).setShortcut('Ctrl+Shift+W')
         fm.addSeparator()
-        fm.addAction('Save IR…',       self._save_ir_txt).setShortcut('Ctrl+Shift+I')
-        fm.addAction('Save TF…',       self._save_tf_txt).setShortcut('Ctrl+Shift+T')
-        fm.addAction('Save Phase…',    self._save_ph_txt).setShortcut('Ctrl+Shift+P')
-        fm.addAction('Save Spectrum…', self._save_sp_txt).setShortcut('Ctrl+Shift+S')
+        fm.addAction('Exportar IR…',         self._save_ir_txt).setShortcut('Ctrl+Shift+I')
+        fm.addAction('Exportar TF…',         self._save_tf_txt).setShortcut('Ctrl+Shift+T')
+        fm.addAction('Exportar Phase…',      self._save_ph_txt).setShortcut('Ctrl+Shift+P')
+        fm.addAction('Exportar Spectrum…',   self._save_sp_txt).setShortcut('Ctrl+Shift+S')
         fm.addSeparator()
-        fm.addAction('Save Graph (PNG)…', self._save_graph_png).setShortcut('Ctrl+G')
+        fm.addAction('Guardar Gráfica (PNG)…', self._save_graph_png).setShortcut('Ctrl+G')
         fm.addSeparator()
-        fm.addAction('Load Mic Calibration…', self._load_mic_cal).setShortcut('Ctrl+K')
-        fm.addAction('Clear Mic Calibration', self._clear_mic_cal)
+        fm.addAction('Cargar Cal. Micrófono…', self._load_mic_cal).setShortcut('Ctrl+K')
+        fm.addAction('Borrar Cal. Micrófono',  self._clear_mic_cal)
         fm.addSeparator()
-        fm.addAction('Quit', self.close).setShortcut('Ctrl+Q')
+        fm.addAction('Salir', self.close).setShortcut('Ctrl+Q')
 
         # ── CONFIG ───────────────────────────────────────────────────
         cm = mb.addMenu('Config')
 
-        cm.addAction('Manage Configurations…',  self._show_manage_configs)
+        cm.addAction('Administrar Configuraciones…', self._show_manage_configs)
         cm.addSeparator()
 
-        cm.addAction('I-O Config…',             self._show_io_config).setShortcut('Alt+A')
-        cm.addAction('Measurement Config…',     self._show_measurement_config).setShortcut('Alt+G')
-        cm.addAction('SPL Config…',             self._show_spl_settings).setShortcut('Ctrl+Shift+E')
-        cm.addAction('Command Bar Config…',     self._show_command_bar_config)
+        cm.addAction('I-O Config…',                  self._show_io_config).setShortcut('Alt+A')
+        cm.addAction('Config. de Medición…',         self._show_measurement_config).setShortcut('Alt+G')
+        cm.addAction('Config. SPL…',                 self._show_spl_settings).setShortcut('Ctrl+Shift+E')
+        cm.addAction('Config. Barra de Comandos…',   self._show_command_bar_config)
         cm.addSeparator()
 
-        cm.addAction('New Spectrum…',           self._new_spectrum_measurement).setShortcut('Ctrl+S')
-        cm.addAction('New Spectrum Avg…',       self._new_spectrum_avg)   # Ctrl+Shift+S reservado para File → Save Spectrum
-        cm.addAction('New TF…',                 self._show_new_tf_dialog).setShortcut('Ctrl+T')
-        cm.addAction('New TF Avg…',             self._new_tf_avg)          # Ctrl+Shift+T reservado para File → Save TF
+        cm.addAction('Nueva Medición Spectrum…',     self._new_spectrum_measurement).setShortcut('Ctrl+S')
+        cm.addAction('Nuevo Promedio Spectrum…',     self._new_spectrum_avg)
+        cm.addAction('Nueva TF…',                    self._show_new_tf_dialog).setShortcut('Ctrl+T')
+        cm.addAction('Nuevo Promedio TF…',           self._new_tf_avg)
         cm.addSeparator()
 
-        cm.addAction('New Tab',                 self._new_tab)
-        cm.addAction('Duplicate Tab',           self._duplicate_tab)
-        cm.addAction('Delete Tab',              self._delete_tab)
-        cm.addAction('Move Tab',                self._move_tab)
+        cm.addAction('Nueva Pestaña',                self._new_tab)
+        cm.addAction('Duplicar Pestaña',             self._duplicate_tab)
+        cm.addAction('Eliminar Pestaña',             self._delete_tab)
+        cm.addAction('Mover Pestaña',                self._move_tab)
         cm.addSeparator()
 
-        cm.addAction('Amplitude Calibration…',  self._show_amplitude_cal)
+        cm.addAction('Calibración de Amplitud…',     self._show_amplitude_cal)
 
-        # ── OPTIONS (estilo SMAART) ───────────────────────────────────
-        om = mb.addMenu('Options')
+        # ── OPCIONES (estilo SMAART) ──────────────────────────────────
+        om = mb.addMenu('Opciones')
 
-        om.addAction('Preferences…',            self._show_preferences).setShortcut('Alt+O')
+        om.addAction('Preferencias…',               self._show_preferences).setShortcut('Alt+O')
         om.addSeparator()
 
-        # Graph Settings submenu — estilo SMAART: un item por tipo de gráfico
-        gs_menu = om.addMenu('Graph Settings')
-        gs_menu.addAction('Spectrum…',          self._show_spectrum_settings).setShortcut('Alt+S')
-        gs_menu.addAction('Transfer Function…', self._show_tf_settings).setShortcut('Alt+T')
-        gs_menu.addAction('Impulse Response…',  self._show_ir_settings).setShortcut('Alt+I')
+        # Submenú Config. de Gráfica
+        gs_menu = om.addMenu('Config. de Gráfica')
+        gs_menu.addAction('Spectrum…',              self._show_spectrum_settings).setShortcut('Alt+S')
+        gs_menu.addAction('Función de Transferencia…', self._show_tf_settings).setShortcut('Alt+T')
+        gs_menu.addAction('Respuesta al Impulso…',  self._show_ir_settings).setShortcut('Alt+I')
 
-        # Measurement Settings submenu
-        # NOTA: shortcuts omitidos aquí — ya están en Config (Alt+A, Alt+G)
-        ms_menu = om.addMenu('Measurement Settings')
+        # Submenú Config. de Medición
+        ms_menu = om.addMenu('Config. de Medición')
         ms_menu.addAction('I-O Config…',            self._show_io_config)
-        ms_menu.addAction('Measurement Config…',    self._show_measurement_config)
+        ms_menu.addAction('Config. de Medición…',   self._show_measurement_config)
         ms_menu.addSeparator()
-        ms_menu.addAction('Find Delay  [D]',        self._on_find_delay)
-        ms_menu.addAction('Reset Delay  [R]',       self._on_delay_reset)
+        ms_menu.addAction('Buscar Retardo  [D]',    self._on_find_delay)
+        ms_menu.addAction('Resetear Retardo  [R]',  self._on_delay_reset)
         ms_menu.addSeparator()
-        ms_menu.addAction('SPL Config…',            self._show_spl_settings)
-        ms_menu.addAction('Amplitude Calibration…', self._show_amplitude_cal)
+        ms_menu.addAction('Config. SPL…',           self._show_spl_settings)
+        ms_menu.addAction('Calibración de Amplitud…', self._show_amplitude_cal)
 
         om.addSeparator()
-        om.addAction('Signal Generator…',           self._show_signal_generator_dialog).setShortcut('Alt+N')
+        om.addAction('Generador de Señal…',         self._show_signal_generator_dialog).setShortcut('Alt+N')
         om.addSeparator()
-        om.addAction('Target Curves…',              self._show_target_curves_dialog).setShortcut('Alt+X')
-        om.addAction('Weighting Curves…',           self._show_weighting_dialog)
+        om.addAction('Curvas de Objetivo…',         self._show_target_curves_dialog).setShortcut('Alt+X')
+        om.addAction('Curvas de Ponderación…',      self._show_weighting_dialog)
         om.addSeparator()
-        # Mic Correction: sin shortcut aquí — ya está en File (Ctrl+K)
-        om.addAction('Mic Correction Curve…',       self._load_mic_cal)
-        om.addAction('Clear Mic Correction',        self._clear_mic_cal)
+        om.addAction('Curva Corrección Micrófono…', self._load_mic_cal)
+        om.addAction('Borrar Corrección Micrófono', self._clear_mic_cal)
 
-        # ── VIEW ─────────────────────────────────────────────────────
-        vm = mb.addMenu('View')
+        # ── VISTA ─────────────────────────────────────────────────────
+        vm = mb.addMenu('Vista')
 
         # ── Modos de medición ─────────────────────────────────────────
         from PyQt6.QtGui import QAction as _QA
-        self._act_rt  = _QA('Real Time Mode',        self, checkable=True, checked=True)
-        self._act_ir  = _QA('Impulse Response Mode', self, checkable=True)
-        self._act_spl = _QA('SPL Mode',              self, checkable=True)
+        self._act_rt  = _QA('Modo Tiempo Real',      self, checkable=True, checked=True)
+        self._act_ir  = _QA('Modo Resp. al Impulso', self, checkable=True)
+        self._act_spl = _QA('Modo SPL',              self, checkable=True)
         # 'R' está reservado para Reset Delay (Command) → usamos Ctrl+1/2/3
         self._act_rt.setShortcut('Ctrl+1')
         self._act_ir.setShortcut('Ctrl+2')
@@ -5800,61 +6000,57 @@ class MainWindow(QMainWindow):
         vm.addAction(self._act_spl)
         vm.addSeparator()
 
-        # ── View Presets (submenu) ────────────────────────────────────
-        vp_menu = vm.addMenu('View Presets')
+        # ── Presets de Vista (submenu) ────────────────────────────────
+        vp_menu = vm.addMenu('Presets de Vista')
         vp_menu.addAction('Magnitude',  self._switch_to_tf)
         vp_menu.addAction('Spectrum',   self._switch_to_spectrum)
         vm.addSeparator()
 
         # ── Ventanas / paneles ────────────────────────────────────────
-        # "Client Window" = sin implementación real, placeholder
-        _act_client = vm.addAction('Client Window…',
-                                   lambda: self.sb.showMessage('Client Window — próximamente', 2000))
+        _act_client = vm.addAction('Ventana Cliente…',
+                                   lambda: self.sb.showMessage('Ventana Cliente — próximamente', 2000))
         _act_client.setShortcut('Alt+R')
 
-        inp_menu = vm.addMenu('Input Meters')
-        inp_menu.addAction('Show Input Meters',
-                           lambda: self.sb.showMessage('Input Meters — próximamente', 2000))
+        inp_menu = vm.addMenu('Medidores de Entrada')
+        inp_menu.addAction('Mostrar Medidores de Entrada',
+                           lambda: self.sb.showMessage('Medidores de Entrada — próximamente', 2000))
 
-        # SPL Meters — shortcut 'E' solo en _sc(), no aquí (evita double-trigger)
-        vm.addAction('SPL Meters  [E]',  self._toggle_spl_meters)
+        vm.addAction('Medidores SPL  [E]', self._toggle_spl_meters)
         vm.addSeparator()
 
         # ── Toggles de gráfica ────────────────────────────────────────
-        self._act_live_ir = _QA('Toggle Live IR  [Cmd+I]', self, checkable=True, checked=True)
-        # Ctrl+I registrado vía _sc() — no lo ponemos aquí para evitar ambiguity
+        self._act_live_ir = _QA('IR en Vivo  [Cmd+I]', self, checkable=True, checked=True)
         self._act_live_ir.triggered.connect(self._toggle_ir_panel)
         vm.addAction(self._act_live_ir)
 
-        self._act_peak = _QA('Toggle Peak Hold', self, checkable=True)
-        # 'P' está en _sc() → Save Trace — peak hold usa Alt+P
+        self._act_peak = _QA('Peak Hold', self, checkable=True)
         self._act_peak.setShortcut('Alt+P')
         self._act_peak.triggered.connect(self._toggle_peak_hold)
         vm.addAction(self._act_peak)
 
-        self._act_coh = _QA('Toggle Coherence', self, checkable=True, checked=True)
+        self._act_coh = _QA('Coherencia', self, checkable=True, checked=True)
         self._act_coh.setShortcut('C')
         self._act_coh.triggered.connect(self._toggle_coherence)
         vm.addAction(self._act_coh)
 
-        act_target = vm.addAction('Show Target Curves')
+        act_target = vm.addAction('Mostrar Curvas de Objetivo')
         act_target.setShortcut('X')
         act_target.setEnabled(False)
         vm.addSeparator()
 
-        act_decay1 = vm.addAction('Reset Decay Markers')
+        act_decay1 = vm.addAction('Resetear Marcadores Decay')
         act_decay1.setEnabled(False)
-        act_decay2 = vm.addAction('Reset All Decay Markers')
+        act_decay2 = vm.addAction('Resetear Todos los Marcadores Decay')
         act_decay2.setEnabled(False)
         vm.addSeparator()
 
         # ── Barras / paneles UI ───────────────────────────────────────
-        self._act_spl_bar  = _QA('Data/SPL Meter Bar', self, checkable=True, checked=True)
-        self._act_ctrl_bar = _QA('Control Bar',         self, checkable=True, checked=True)
-        self._act_cmd_bar  = _QA('Command Bar',         self, checkable=True)
-        self._act_tab_bar  = _QA('Tab Bar',             self, checkable=True, checked=True)
-        self._act_spl_met  = _QA('SPL Meter',           self, checkable=True, checked=True)
-        self._act_compact  = _QA('Compact Signal Generator', self, checkable=True)
+        self._act_spl_bar  = _QA('Barra SPL/Data',          self, checkable=True, checked=True)
+        self._act_ctrl_bar = _QA('Barra de Control',         self, checkable=True, checked=True)
+        self._act_cmd_bar  = _QA('Barra de Comandos',        self, checkable=True)
+        self._act_tab_bar  = _QA('Barra de Pestañas',        self, checkable=True, checked=True)
+        self._act_spl_met  = _QA('Medidor SPL',              self, checkable=True, checked=True)
+        self._act_compact  = _QA('Generador Compacto',       self, checkable=True)
 
         self._act_spl_bar.setShortcut('B')
         self._act_ctrl_bar.setShortcut('O')
@@ -5870,9 +6066,9 @@ class MainWindow(QMainWindow):
             lambda c: self._ws_row.setVisible(c) if hasattr(self, '_ws_row') else None)
         # Command Bar / Compact — sin widget real, solo actualiza estado
         self._act_cmd_bar.triggered.connect(
-            lambda c: self.sb.showMessage(f'Command Bar {"shown" if c else "hidden"}', 2000))
+            lambda c: self.sb.showMessage(f'Barra de Comandos {"visible" if c else "oculta"}', 2000))
         self._act_compact.triggered.connect(
-            lambda c: self.sb.showMessage(f'Compact Generator {"enabled" if c else "disabled"}', 2000))
+            lambda c: self.sb.showMessage(f'Generador Compacto {"activado" if c else "desactivado"}', 2000))
 
         for a in (self._act_spl_bar, self._act_ctrl_bar, self._act_cmd_bar,
                   self._act_tab_bar, self._act_spl_met, self._act_compact):
@@ -5880,33 +6076,33 @@ class MainWindow(QMainWindow):
         vm.addSeparator()
 
         # Toggle SPL/Clock — 'K' en _sc(), sin shortcut aquí
-        vm.addAction('Toggle SPL/Clock  [K]',     self._toggle_spl_clock)
-        vm.addAction('Toggle Data/SPL Meter Bar', lambda: self._act_spl_bar.trigger()).setShortcut('Alt+E')
+        vm.addAction('SPL/Reloj  [K]',            self._toggle_spl_clock)
+        vm.addAction('Barra SPL/Data',            lambda: self._act_spl_bar.trigger()).setShortcut('Alt+E')
         vm.addSeparator()
 
-        vm.addAction('Toggle Settings Panel',     self._on_toggle_settings).setShortcut('Ctrl+Right')
-        vm.addAction('Toggle Save Panel',         self._on_toggle_save).setShortcut('Ctrl+Left')
+        vm.addAction('Panel de Ajustes',          self._on_toggle_settings).setShortcut('Ctrl+Right')
+        vm.addAction('Panel de Guardado',         self._on_toggle_save).setShortcut('Ctrl+Left')
 
-        # ── COMMAND ──────────────────────────────────────────────────
+        # ── COMANDO ──────────────────────────────────────────────────
         # NOTA: Space, D, F, G, P ya están registrados como ApplicationShortcut
         # vía _sc() — los QAction NO llevan setShortcut() para evitar
         # "Ambiguous shortcut" (Qt dispararía el slot dos veces).
         # El hint [X] en el texto es solo informativo.
-        xm = mb.addMenu('Command')
-        xm.addAction('Start  [Space]',    self._on_start)
-        xm.addAction('Stop',              self._on_stop)
+        xm = mb.addMenu('Comando')
+        xm.addAction('Iniciar  [Space]',          self._on_start)
+        xm.addAction('Detener',                   self._on_stop)
         xm.addSeparator()
-        xm.addAction('Find Delay  [D]',   self._on_find_delay)
-        xm.addAction('Reset Delay  [R]',  self._on_delay_reset).setShortcut('R')
-        xm.addAction('Freeze  [F]',       lambda: self.btn_freeze_p.click())
+        xm.addAction('Buscar Retardo  [D]',       self._on_find_delay)
+        xm.addAction('Resetear Retardo  [R]',     self._on_delay_reset).setShortcut('R')
+        xm.addAction('Congelar  [F]',             lambda: self.btn_freeze_p.click())
         xm.addSeparator()
-        xm.addAction('Save Trace  [P]',   self._save_trace)
-        xm.addAction('Toggle Noise  [G]', lambda: self.btn_noise_p.click())
+        xm.addAction('Capturar Traza  [P]',       self._capture_trace_dialog)
+        xm.addAction('Activar/Desact. Ruido  [G]',lambda: self.btn_noise_p.click())
 
-        # ── HELP ─────────────────────────────────────────────────────
-        hm = mb.addMenu('Help')
-        hm.addAction('Keyboard Shortcuts', self._show_shortcuts)
-        hm.addAction('About Coherence…',   self._show_about)
+        # ── AYUDA ────────────────────────────────────────────────────
+        hm = mb.addMenu('Ayuda')
+        hm.addAction('Atajos de Teclado', self._show_shortcuts)
+        hm.addAction('Acerca de Coherence…', self._show_about)
 
         # ── Shortcuts globales — ApplicationShortcut para que funcionen ──
         # aunque el canvas matplotlib tenga el foco de teclado.
@@ -5919,20 +6115,58 @@ class MainWindow(QMainWindow):
             s.activated.connect(slot)
             return s
 
-        # Navegación de vista
-        _sc('S',      self._switch_to_spectrum)
-        _sc('T',      self._switch_to_tf)
-        # Transport
-        _sc('Space',  self._on_start)
-        _sc('D',      self._on_find_delay)
-        _sc('F',      lambda: self.btn_freeze_p.click())
-        _sc('G',      lambda: self.btn_noise_p.click())
-        _sc('P',      self._save_trace)
-        # IR toggle — Cmd+I en macOS = Ctrl+I en Qt
+        # Multi-key shortcuts — estos NO son interceptados por matplotlib
         _sc('Ctrl+I', self._toggle_ir_panel)
-        # SPL / misc
-        _sc('E',      self._toggle_spl_meters)
-        _sc('K',      self._toggle_spl_clock)
+
+        # Teclas de una sola letra — se registran via _install_key_filter()
+        # (event filter a nivel QApplication, más confiable que QShortcut con
+        #  ApplicationShortcut cuando matplotlib FigureCanvasQTAgg tiene el foco)
+        self._install_key_filter()
+
+    def _install_key_filter(self):
+        """Event filter instalado en QApplication — intercepta teclas de una sola
+        letra ANTES de que matplotlib FigureCanvasQTAgg las consuma.
+
+        matplotlib tiene atajos propios ('p'=pan, 's'=save, 'g'=grid, 'r'=reset
+        view, 'c'=back…) que consume a nivel de widget (keyPressEvent). Los
+        QShortcut con ApplicationShortcut se procesan DESPUÉS del dispatch al
+        widget focalizado, por lo que también son bloqueados. El único método
+        infalible es un QObject.eventFilter en QApplication, que se llama ANTES
+        de cualquier dispatch.
+        """
+        from PyQt6.QtCore import QObject, QEvent, Qt as _Qt2
+        from PyQt6.QtWidgets import (QApplication, QLineEdit, QTextEdit,
+                                     QSpinBox, QDoubleSpinBox, QComboBox)
+
+        _TEXT_WIDGETS = (QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox)
+
+        bindings = {
+            _Qt2.Key.Key_Space: self._on_start,
+            _Qt2.Key.Key_D:     self._on_find_delay,
+            _Qt2.Key.Key_F:     lambda: self.btn_freeze_p.click(),
+            _Qt2.Key.Key_G:     lambda: self.btn_noise_p.click(),
+            _Qt2.Key.Key_P:     self._capture_trace_dialog,
+            _Qt2.Key.Key_S:     self._switch_to_spectrum,
+            _Qt2.Key.Key_T:     self._switch_to_tf,
+            _Qt2.Key.Key_C:     self._toggle_coherence,
+            _Qt2.Key.Key_E:     self._toggle_spl_meters,
+            _Qt2.Key.Key_K:     self._toggle_spl_clock,
+            _Qt2.Key.Key_R:     self._on_delay_reset,
+        }
+
+        class _AppKeyFilter(QObject):
+            def eventFilter(self_, obj, event):
+                if event.type() == QEvent.Type.KeyPress:
+                    key = event.key()
+                    if key in bindings:
+                        fw = QApplication.focusWidget()
+                        if not isinstance(fw, _TEXT_WIDGETS):
+                            bindings[key]()
+                            return True   # consume — no llega a matplotlib
+                return False
+
+        self._app_key_filter = _AppKeyFilter(self)
+        QApplication.instance().installEventFilter(self._app_key_filter)
 
     def _build_statusbar(self):
         self.sb = QStatusBar()
@@ -5974,9 +6208,8 @@ class MainWindow(QMainWindow):
                 self._dev_out_ids.append(d['id'])
                 if d['id'] == self.engine.dev_out:
                     self.cmb_dev_out.setCurrentIndex(self.cmb_dev_out.count() - 1)
-                # Lista para el menú desplegable del Signal Generator
-                self._noise_dev_list.append((d['id'], d['name']))
-                if d['id'] == self.engine.dev_out:
+                    # Solo el dispositivo configurado en I-O Config aparece en Signal Generator
+                    self._noise_dev_list.append((d['id'], d['name']))
                     _initial_noise_name = d['name']
 
         self.cmb_dev_in.currentIndexChanged.connect(self._on_dev_in)
@@ -6000,17 +6233,14 @@ class MainWindow(QMainWindow):
     # ── Handlers ──────────────────────────────────────────────────────
 
     def _on_start(self):
-        # Abrir stream solo si no está corriendo ya (el GEN puede haberlo abierto antes)
-        if not self.engine.running:
-            try:
-                self.engine.start()
-            except Exception as exc:
-                self.sb.showMessage(f'⚠  Error al abrir stream: {exc}', 8000)
-                return
-        self.timer.start()
-        self._set_running()
-        self._silent_ticks = 0
-        QTimer.singleShot(3000, self._check_signal_present)
+        """
+        Main ▶ — activa TODOS los engines a la vez.
+        Equivale a presionar ▶ en cada engine individualmente.
+        El stream lo abre el primer engine que se active (vía _on_engine_active_changed).
+        """
+        for eng in self._tf_engines:
+            if not eng.active:
+                eng._on_toggle_active(True)
 
     def _check_signal_present(self):
         """
@@ -6047,13 +6277,13 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _on_stop(self):
-        # Solo detiene la MEDICIÓN (timer + análisis DSP).
-        # El stream de audio sigue abierto — el generador de ruido es independiente.
-        self.timer.stop()
-        self._set_stopped()
-        # Si el generador también está apagado, cerrar el stream para liberar hardware
-        if not self.engine.noise_on:
-            self.engine.stop()
+        """
+        Main ⏹ — desactiva TODOS los engines a la vez.
+        Equivale a presionar ⏸ en cada engine individualmente.
+        """
+        for eng in self._tf_engines:
+            if eng.active:
+                eng._on_toggle_active(False)
 
 
 
@@ -6350,6 +6580,21 @@ class MainWindow(QMainWindow):
             # Evitar que un error en el timer trabe la UI
             self.sb.showMessage(f'⚠  refresh error: {exc}', 3000)
 
+    def _on_avg_changed(self, idx: int):
+        """Cambia n_averages y resetea los acumuladores RunningTF.
+
+        Sin reset, el nuevo alpha tarda decenas de bloques en desplazar
+        la historia vieja — el cambio es casi imperceptible en tiempo real.
+        Con reset, el nuevo valor de averaging tiene efecto en el
+        siguiente bloque que se pushea.
+        """
+        n = self._avg_values[idx]
+        self.engine.n_averages = n
+        # Aplicar alpha nuevo y limpiar acumuladores de todos los RunningTF
+        for rtf in getattr(self, '_running_tfs', []):
+            rtf.set_n_averages(n)
+            rtf.reset()
+
     def _refresh_inner(self):
         # Reloj
         self.lbl_clock.setText(
@@ -6457,33 +6702,39 @@ class MainWindow(QMainWindow):
 
         y0     = self.engine.get_buffer_meas(0)
         delay0 = self._tf_engines[0]._delay_comp_ms
+        _eng0_active = self._tf_engines[0].active
 
         rtf0 = self._running_tfs[0] if self._running_tfs else None
 
-        # Solo actualizamos si la señal supera el noise floor (level gate)
+        freqs = gamma2 = mag_db = phase_deg = gxx_db = None
+
         if rtf0 is not None:
-            if _signal_ok:
+            # Solo acumular datos si el engine está activo (pause = no push)
+            if _signal_ok and _eng0_active:
                 rtf0.push(x, y0)
-            # Si RunningTF no tiene datos aún, no hay nada que mostrar
-            if not rtf0.ready:
+            if rtf0.ready:
+                freqs, gamma2, mag_db, phase_deg, gxx_db = rtf0.get_tf(
+                    delay_comp_s    = delay0 / 1000.0,
+                    smooth_fraction = smooth_frac,
+                )
+            elif _eng0_active:
+                # Engine activo pero sin datos aún → esperar
                 return
-            freqs, gamma2, mag_db, phase_deg, gxx_db = rtf0.get_tf(
-                delay_comp_s    = delay0 / 1000.0,
-                smooth_fraction = smooth_frac,
-            )
+            # Si engine0 inactivo y rtf0 sin datos, continuar para procesar eng1
         else:
-            if not _signal_ok:
-                return
-            freqs, gamma2, mag_db, phase_deg, gxx_db, _ = compute_analysis(
-                x, y0, nperseg=self.engine.nperseg, fs=self.engine.fs,
-                smooth_fraction=smooth_frac, delay_comp_s=delay0/1000.0)
+            if _eng0_active:
+                if not _signal_ok:
+                    return
+                freqs, gamma2, mag_db, phase_deg, gxx_db, _ = compute_analysis(
+                    x, y0, nperseg=self.engine.nperseg, fs=self.engine.fs,
+                    smooth_fraction=smooth_frac, delay_comp_s=delay0/1000.0)
 
-        # Aplicar offset de normalización del engine 0
-        mag_db = mag_db + self._tf_engines[0]._gain_offset_db
-
-        if self._mic_cal is not None:
-            cal_f, cal_db = self._mic_cal
-            mag_db = mag_db - np.interp(freqs, cal_f, cal_db, left=0.0, right=0.0)
+        # Aplicar offset y calibración solo si engine0 activo y tiene datos
+        if _eng0_active and freqs is not None:
+            mag_db = mag_db + self._tf_engines[0]._gain_offset_db
+            if self._mic_cal is not None:
+                cal_f, cal_db = self._mic_cal
+                mag_db = mag_db - np.interp(freqs, cal_f, cal_db, left=0.0, right=0.0)
 
         # Engine 1 → CH2 line
         freqs2 = mag_db2 = phase_deg2 = gamma2_2 = None
@@ -6510,10 +6761,14 @@ class MainWindow(QMainWindow):
                 mag_db2 = mag_db2 - np.interp(freqs2, cal_f, cal_db, left=0.0, right=0.0)
 
         # ── Promedio de TODOS los engines activos (N engines) ────────────
-        # Recolectar resultados de engines 0 y 1 ya calculados
-        _all_lin  = [10.0 ** (mag_db / 20.0)]
-        _all_ph   = [phase_deg]
-        _all_g2   = [gamma2]
+        # Solo incluir engines que estén activos Y con datos
+        _all_lin = []
+        _all_ph  = []
+        _all_g2  = []
+        if _eng0_active and mag_db is not None:
+            _all_lin.append(10.0 ** (mag_db / 20.0))
+            _all_ph.append(phase_deg)
+            _all_g2.append(gamma2)
         if mag_db2 is not None:
             _all_lin.append(10.0 ** (mag_db2 / 20.0))
             _all_ph.append(phase_deg2)
@@ -6535,7 +6790,7 @@ class MainWindow(QMainWindow):
                         smooth_fraction=smooth_frac)
                     _gain_ei = self._tf_engines[_ei]._gain_offset_db
                     _mei = _mei + _gain_ei
-                    if self._mic_cal is not None:
+                    if self._mic_cal is not None and freqs is not None:
                         _mei = _mei - np.interp(freqs, cal_f, cal_db, left=0.0, right=0.0)
                     _all_lin.append(10.0 ** (_mei / 20.0))
                     _all_ph.append(_phei)
@@ -6552,8 +6807,12 @@ class MainWindow(QMainWindow):
         sel_idx  = min(sel_idx, len(self._running_tfs) - 1)
         rtf_sel  = self._running_tfs[sel_idx] if self._running_tfs else rtf0
         y_sel    = self.engine.get_buffer_meas(sel_idx)
-        if _signal_ok and rtf_sel is not None and rtf_sel != rtf0:
-            rtf_sel.push(x, y_sel)   # ya empujado si sel_idx==0
+        _sel_active = (sel_idx < len(self._tf_engines) and
+                       self._tf_engines[sel_idx].active)
+        # Pushear solo si: el selected engine es diferente de eng0 (ya pushado)
+        # Y si el selected engine está activo
+        if _signal_ok and rtf_sel is not None and rtf_sel != rtf0 and _sel_active:
+            rtf_sel.push(x, y_sel)
 
         if rtf_sel is not None and rtf_sel.ready:
             H_ir        = rtf_sel.Gxy / (rtf_sel.Gxx + eps)
@@ -6594,27 +6853,40 @@ class MainWindow(QMainWindow):
                 pass
 
         self.canvas_meas._fs      = self.engine.fs
-        self.canvas_meas._nperseg = self.engine.nperseg  # necesario para eje IR correcto
+        self.canvas_meas._nperseg = self.engine.nperseg
 
-        mask    = (freqs >= 20) & (freqs <= 20000)
-        avg_coh = float(np.mean(gamma2[mask]))
-
-        # ── Update canvas ─────────────────────────────────────────────
-        self.canvas_meas.update_plots(
-            freqs, gamma2, mag_db, phase_deg, gxx_db, ir,
-            coh_thresh    = thresh,
-            unwrap_phase  = getattr(self, '_unwrap_phase',  False),
-            coh_squared   = getattr(self, '_coh_squared',   True),
-            phase_as_gd   = getattr(self, '_phase_as_gd',   False),
-        )
+        # ── Update canvas — solo si el engine tiene datos ─────────────
+        if _eng0_active and freqs is not None:
+            mask    = (freqs >= 20) & (freqs <= 20000)
+            avg_coh = float(np.mean(gamma2[mask]))
+            self.canvas_meas.update_plots(
+                freqs, gamma2, mag_db, phase_deg, gxx_db, ir,
+                coh_thresh    = thresh,
+                unwrap_phase  = getattr(self, '_unwrap_phase',  False),
+                coh_squared   = getattr(self, '_coh_squared',   True),
+                phase_as_gd   = getattr(self, '_phase_as_gd',   False),
+            )
+        else:
+            # Engine 0 en pausa — limpiar sus líneas en cada tick
+            self.canvas_meas.line_tf.set_data([], [])
+            self.canvas_meas.line_ph.set_data([], [])
+            self.canvas_meas.line_ir.set_data([], [])
+            self.canvas_meas.line_ir_peak.set_xdata([0, 0])
+            self.canvas_meas.draw_idle()
+            # Calcular avg_coh desde engine 1 si está disponible
+            avg_coh = 0.0
+            if freqs2 is not None and gamma2_2 is not None:
+                _m2 = (freqs2 >= 20) & (freqs2 <= 20000)
+                avg_coh = float(np.mean(gamma2_2[_m2]))
         if freqs2 is not None and self._show_ch2:
             self.canvas_meas.update_ch2(freqs2, mag_db2, phase_deg2,
                                         gamma2_2, coh_thresh=thresh)
         else:
             self.canvas_meas.update_ch2(None, None, None, None)
 
-        if mag_avg is not None and self._show_avg:
-            self.canvas_meas.update_avg(freqs, mag_avg, ph_avg,
+        _avg_freqs_main = freqs if freqs is not None else freqs2
+        if mag_avg is not None and self._show_avg and _avg_freqs_main is not None:
+            self.canvas_meas.update_avg(_avg_freqs_main, mag_avg, ph_avg,
                                         g2_avg, coh_thresh=thresh)
         else:
             self.canvas_meas.update_avg(None, None, None, None)
@@ -6624,15 +6896,23 @@ class MainWindow(QMainWindow):
                 self._secondary_panel._current_view in ('Magnitude', 'Phase')):
             cm2 = self._secondary_panel.canvas_meas
             cm2._fs = self.engine.fs
-            cm2.update_plots(freqs, gamma2, mag_db, phase_deg,
-                             gxx_db, ir, coh_thresh=thresh)
+            if _eng0_active and freqs is not None:
+                cm2.update_plots(freqs, gamma2, mag_db, phase_deg,
+                                 gxx_db, ir, coh_thresh=thresh)
+            else:
+                cm2.line_tf.set_data([], [])
+                cm2.line_ph.set_data([], [])
+                cm2.line_ir.set_data([], [])
+                cm2.line_ir_peak.set_xdata([0, 0])
+                cm2.draw_idle()
             if freqs2 is not None:
                 cm2.update_ch2(freqs2, mag_db2, phase_deg2,
                                gamma2_2, coh_thresh=thresh)
             else:
                 cm2.update_ch2(None, None, None, None)
-            if mag_avg is not None:
-                cm2.update_avg(freqs, mag_avg, ph_avg, g2_avg, coh_thresh=thresh)
+            _avg_freqs = freqs if freqs is not None else freqs2
+            if mag_avg is not None and self._show_avg and _avg_freqs is not None:
+                cm2.update_avg(_avg_freqs, mag_avg, ph_avg, g2_avg, coh_thresh=thresh)
             else:
                 cm2.update_avg(None, None, None, None)
 
@@ -8060,8 +8340,102 @@ class MainWindow(QMainWindow):
 
     # ── Overlay de trazas ─────────────────────────────────────────────
 
-    def _save_trace(self):
-        """Captura el estado actual y lo guarda como traza estática de referencia."""
+
+    def _capture_trace_dialog(self):
+        """Muestra el dialog 'Capture Trace' — nombre + selector de color."""
+        if len(self._traces) >= MAX_TRACES:
+            self.sb.showMessage(
+                f'⚠  Máximo {MAX_TRACES} trazas. Eliminá una antes de guardar.', 4000)
+            return
+        if self.canvas_meas._last_freqs is None:
+            self.sb.showMessage('⚠  Sin datos — iniciá la medición primero.', 3000)
+            return
+
+        # Nombre y color por defecto
+        ws_name = (self._workspaces[self._current_ws_idx].get('name', 'Workspace')
+                   if self._current_ws_idx < len(self._workspaces) else 'Workspace')
+        default_name  = f'{ws_name}-{len(self._traces) + 1}'
+        default_color = TRACE_PALETTE[self._trace_color_idx % len(TRACE_PALETTE)]
+        _picked_color = [default_color]   # lista mutable para capturar en closures
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Capturar Traza')
+        dlg.setModal(True)
+        dlg.setFixedSize(380, 140)
+        dlg.setStyleSheet(
+            'QDialog{background:#1a1a1a;}'
+            f'QLabel{{color:{TEXT_HI};font-size:12px;background:transparent;}}'
+            'QLineEdit{background:#e8e8e8;color:#111;border:none;'
+            'border-radius:3px;padding:4px 8px;font-size:12px;}'
+            f'QPushButton#ok_btn{{background:#2a3a2a;color:{TEXT_HI};'
+            'border:1px solid #4a6a4a;border-radius:4px;'
+            'font-size:11px;padding:5px 22px;}}'
+            f'QPushButton#ok_btn:hover{{background:#3a4a3a;border-color:#6a9a6a;}}'
+            f'QPushButton#cancel_btn{{background:#2e2e2e;color:{TEXT_HI};'
+            'border:1px solid #444;border-radius:4px;'
+            'font-size:11px;padding:5px 22px;}}'
+            f'QPushButton#cancel_btn:hover{{background:#3a3a3a;border-color:#666;}}')
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(20, 18, 20, 14)
+        root.setSpacing(12)
+
+        # Fila nombre
+        row_name = QHBoxLayout()
+        row_name.addWidget(QLabel('Nombre:'))
+        edit = QLineEdit(default_name)
+        edit.selectAll()
+        row_name.addWidget(edit, stretch=1)
+        root.addLayout(row_name)
+
+        # Fila color
+        row_color = QHBoxLayout()
+        row_color.addWidget(QLabel('Color:'))
+        btn_color = QPushButton()
+        btn_color.setFixedSize(34, 24)
+        btn_color.setStyleSheet(
+            f'background:{default_color};border:1px solid #666;border-radius:3px;')
+        btn_color.setToolTip('Elegir color para magnitud y fase')
+
+        def _pick_color():
+            from PyQt6.QtWidgets import QColorDialog
+            from PyQt6.QtGui import QColor as _QColor
+            c = QColorDialog.getColor(_QColor(_picked_color[0]), dlg, 'Color de la Traza')
+            if c.isValid():
+                _picked_color[0] = c.name()
+                btn_color.setStyleSheet(
+                    f'background:{c.name()};border:1px solid #666;border-radius:3px;')
+
+        btn_color.clicked.connect(_pick_color)
+        row_color.addWidget(btn_color)
+        row_color.addStretch()
+        root.addLayout(row_color)
+
+        # Botones OK / Cancel
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+        btns.addStretch()
+        btn_ok     = QPushButton('OK');     btn_ok.setObjectName('ok_btn')
+        btn_cancel = QPushButton('Cancelar'); btn_cancel.setObjectName('cancel_btn')
+        btn_ok.setDefault(True)
+        btns.addWidget(btn_ok)
+        btns.addWidget(btn_cancel)
+        root.addLayout(btns)
+
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel.clicked.connect(dlg.reject)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        name  = edit.text().strip() or default_name
+        color = _picked_color[0]
+        self._save_trace(name=name, color=color)
+
+    def _save_trace(self, name: str = '', color: str = None):
+        """Captura el estado actual y lo guarda como traza estática de referencia.
+        Siempre guarda magnitud Y fase con el mismo color (están enlazadas).
+        """
         if len(self._traces) >= MAX_TRACES:
             self.sb.showMessage(
                 f'⚠  Máximo {MAX_TRACES} trazas. Eliminá una antes de guardar.', 4000)
@@ -8072,18 +8446,28 @@ class MainWindow(QMainWindow):
             self.sb.showMessage('⚠  Sin datos — iniciá la medición primero.', 3000)
             return
 
-        color = TRACE_PALETTE[self._trace_color_idx % len(TRACE_PALETTE)]
+        if color is None:
+            color = TRACE_PALETTE[self._trace_color_idx % len(TRACE_PALETTE)]
         self._trace_color_idx += 1
 
-        name      = f'T{len(self._traces) + 1}'
+        if not name:
+            name = f'T{len(self._traces) + 1}'
         thresh    = self.spn_thresh.value()
 
-        # Niveles CPB del spectrum (pueden no existir si nunca se vio esa tab)
-        lev_x = self.canvas_spec._last_lx
-        lev_y = self.canvas_spec._last_ly
-        if lev_x is None or lev_y is None:
-            lev_x = np.full(31, -80.0)
-            lev_y = np.full(31, -80.0)
+        # Niveles del spectrum (CPB o FFT raw según resolución activa)
+        lev_x     = self.canvas_spec._last_lx
+        lev_y     = self.canvas_spec._last_ly
+        lev_freqs = self.canvas_spec._last_freqs
+        if lev_x is None or lev_y is None or lev_freqs is None:
+            lev_freqs = self.canvas_spec._centers if len(
+                self.canvas_spec._centers) > 0 else np.array([1000.0])
+            lev_x = np.full(len(lev_freqs), -80.0)
+            lev_y = np.full(len(lev_freqs), -80.0)
+        # Asegurar coherencia de longitudes
+        min_len = min(len(lev_freqs), len(lev_x), len(lev_y))
+        lev_freqs = lev_freqs[:min_len]
+        lev_x     = lev_x[:min_len]
+        lev_y     = lev_y[:min_len]
 
         tr = TraceData(
             name         = name,
@@ -8098,6 +8482,7 @@ class MainWindow(QMainWindow):
             coh_thresh   = thresh,
             lev_x        = lev_x.copy(),
             lev_y        = lev_y.copy(),
+            lev_freqs    = lev_freqs.copy(),
         )
         self._traces.append(tr)
 
@@ -8106,7 +8491,7 @@ class MainWindow(QMainWindow):
             tr.freqs, tr.mag_db, tr.phase_deg, tr.gamma2, tr.ir,
             tr.delay_ref_ms, tr.color, tr.coh_thresh
         )
-        self.canvas_spec.store_trace(tr.lev_x, tr.lev_y, tr.color)
+        self.canvas_spec.store_trace(tr.lev_x, tr.lev_y, tr.color, tr.lev_freqs)
 
         self._rebuild_trace_panel()
         self.sb.showMessage(f'Traza {name} guardada', 3000)
