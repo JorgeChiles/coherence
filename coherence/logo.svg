@@ -1,58 +1,60 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 680" width="1024" height="1024">
+
   <!-- Fondo -->
-  <rect width="1024" height="1024" rx="120" fill="#080808"/>
+  <rect width="680" height="680" rx="72" fill="#060606"/>
 
   <!-- Cuadrícula sutil -->
-  <line x1="0"   y1="512" x2="1024" y2="512" stroke="#ffffff" stroke-width="0.6" stroke-opacity="0.04"/>
-  <line x1="512" y1="0"   x2="512"  y2="1024" stroke="#ffffff" stroke-width="0.6" stroke-opacity="0.04"/>
-  <line x1="0"   y1="308" x2="1024" y2="308" stroke="#ffffff" stroke-width="0.4" stroke-opacity="0.03"/>
-  <line x1="0"   y1="716" x2="1024" y2="716" stroke="#ffffff" stroke-width="0.4" stroke-opacity="0.03"/>
+  <line x1="0" y1="340" x2="680" y2="340" stroke="#ffffff" stroke-width="0.5" stroke-opacity="0.03"/>
+  <line x1="340" y1="0" x2="340" y2="680" stroke="#ffffff" stroke-width="0.5" stroke-opacity="0.03"/>
 
-  <!-- C arc: centro (512,450), radio 272, apertura ±45° hacia la derecha -->
-  <!-- Tips: upper=(704,258), lower=(704,642) -->
-  <!-- 7 segmentos del arcoíris: cada uno ~38.57° del arco de 270° total -->
+  <!-- C arc — cx=340 cy=310 r=210 stroke-width=70 -->
+  <!-- 7 segmentos de 38.57° cada uno, antihorario de 315° a 45° -->
+  <!-- P0=315°:(488.5,161.5) P1=276.43°:(363.9,101.4) P2=237.86°:(228.4,132.1) -->
+  <!-- P3=199.29°:(141.8,240.6) P4=160.71°:(141.8,379.4) P5=122.14°:(228.4,487.9) -->
+  <!-- P6=83.57°:(363.9,518.6) P7=45°:(488.5,458.5) -->
 
-  <!-- Seg 1 Violeta: 315°→276.4° → (704,258) → (481,98) -->
-  <path d="M 704 258 A 272 272 0 0 0 481 98"
-        fill="none" stroke="#BF5AF2" stroke-width="86" stroke-linecap="butt"/>
+  <!-- Seg 1 Violeta -->
+  <path d="M 488.5 161.5 A 210 210 0 0 0 363.9 101.4"
+        fill="none" stroke="#BF5AF2" stroke-width="70" stroke-linecap="butt"/>
+  <!-- Seg 2 Azul -->
+  <path d="M 363.9 101.4 A 210 210 0 0 0 228.4 132.1"
+        fill="none" stroke="#0A84FF" stroke-width="70" stroke-linecap="butt"/>
+  <!-- Seg 3 Cian -->
+  <path d="M 228.4 132.1 A 210 210 0 0 0 141.8 240.6"
+        fill="none" stroke="#00C5E8" stroke-width="70" stroke-linecap="butt"/>
+  <!-- Seg 4 Verde -->
+  <path d="M 141.8 240.6 A 210 210 0 0 0 141.8 379.4"
+        fill="none" stroke="#30D158" stroke-width="70" stroke-linecap="butt"/>
+  <!-- Seg 5 Amarillo -->
+  <path d="M 141.8 379.4 A 210 210 0 0 0 228.4 487.9"
+        fill="none" stroke="#FFD60A" stroke-width="70" stroke-linecap="butt"/>
+  <!-- Seg 6 Naranja -->
+  <path d="M 228.4 487.9 A 210 210 0 0 0 363.9 518.6"
+        fill="none" stroke="#FF9F0A" stroke-width="70" stroke-linecap="butt"/>
+  <!-- Seg 7 Rojo -->
+  <path d="M 363.9 518.6 A 210 210 0 0 0 488.5 458.5"
+        fill="none" stroke="#FF3B30" stroke-width="70" stroke-linecap="butt"/>
 
-  <!-- Seg 2 Azul: 276.4°→237.9° → (481,98) → (399,157) -->
-  <path d="M 481 98 A 272 272 0 0 0 399 157"
-        fill="none" stroke="#0A84FF" stroke-width="86" stroke-linecap="butt"/>
+  <!-- Puntas redondeadas -->
+  <circle cx="488.5" cy="161.5" r="35" fill="#BF5AF2"/>
+  <circle cx="488.5" cy="458.5" r="35" fill="#FF3B30"/>
 
-  <!-- Seg 3 Cian: 237.9°→199.3° → (399,157) → (278,313) -->
-  <path d="M 399 157 A 272 272 0 0 0 278 313"
-        fill="none" stroke="#00E5FF" stroke-width="86" stroke-linecap="butt"/>
+  <!-- Línea de referencia interior -->
+  <line x1="185" y1="310" x2="472" y2="310"
+        stroke="#ffffff" stroke-width="0.8" stroke-opacity="0.07" stroke-dasharray="5 5"/>
 
-  <!-- Seg 4 Verde: 199.3°→160.7° → (278,313) → (278,587) -->
-  <path d="M 278 313 A 272 272 0 0 0 278 587"
-        fill="none" stroke="#30D158" stroke-width="86" stroke-linecap="butt"/>
+  <!-- Curva de respuesta en frecuencia -->
+  <path d="M 185 310 C 235 288 268 342 318 305 S 382 270 432 310 S 458 328 472 310"
+        fill="none" stroke="#ffffff" stroke-width="1.6" stroke-opacity="0.3"/>
 
-  <!-- Seg 5 Amarillo: 160.7°→122.1° → (278,587) → (399,743) -->
-  <path d="M 278 587 A 272 272 0 0 0 399 743"
-        fill="none" stroke="#FFD60A" stroke-width="86" stroke-linecap="butt"/>
+  <!-- Separador -->
+  <line x1="170" y1="580" x2="510" y2="580"
+        stroke="#ffffff" stroke-width="0.5" stroke-opacity="0.12"/>
 
-  <!-- Seg 6 Naranja: 122.1°→83.6° → (399,743) → (481,802) -->
-  <path d="M 399 743 A 272 272 0 0 0 481 802"
-        fill="none" stroke="#FF9F0A" stroke-width="86" stroke-linecap="butt"/>
+  <!-- Wordmark -->
+  <text x="340" y="608"
+        font-family="-apple-system, system-ui, 'Helvetica Neue', sans-serif"
+        font-size="17" font-weight="300" letter-spacing="7"
+        fill="#ffffff" fill-opacity="0.5" text-anchor="middle">COHERENCE</text>
 
-  <!-- Seg 7 Rojo: 83.6°→45° → (481,802) → (704,642) -->
-  <path d="M 481 802 A 272 272 0 0 0 704 642"
-        fill="none" stroke="#FF453A" stroke-width="86" stroke-linecap="round"/>
-
-  <!-- Punta superior redondeada -->
-  <circle cx="704" cy="258" r="43" fill="#BF5AF2"/>
-
-  <!-- Curva interior sutil (respuesta en frecuencia) -->
-  <path d="M 310 450
-           Q 360 386 410 450
-           Q 460 514 510 450
-           Q 560 386 610 450
-           Q 660 514 700 450"
-        fill="none" stroke="#ffffff" stroke-width="3" stroke-opacity="0.18"/>
-
-  <!-- Línea de referencia -->
-  <line x1="308" y1="450" x2="704" y2="450"
-        stroke="#ffffff" stroke-width="1.2"
-        stroke-opacity="0.08" stroke-dasharray="8 8"/>
 </svg>
