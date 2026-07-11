@@ -5739,8 +5739,6 @@ class MainWindow(QMainWindow):
         - Apply confirma la selección y reinicia el stream si estaba corriendo.
         - Cancel descarta cambios.
         """
-        import sounddevice as sd
-
         dlg = QDialog(self)
         dlg.setWindowTitle('I-O Config')
         dlg.resize(860, 560)
@@ -5750,21 +5748,10 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(8)
 
-        # Obtener dispositivos
-        try:
-            raw_devs = sd.query_devices()
-        except Exception:
-            raw_devs = []
-
-        all_devs = []
-        for i, d in enumerate(raw_devs):
-            all_devs.append({
-                'id':   i,
-                'name': d['name'],
-                'in':   int(d['max_input_channels']),
-                'out':  int(d['max_output_channels']),
-                'fs':   int(d['default_samplerate']),
-            })
+        # Obtener dispositivos — WASAPI-only en Windows, todos en macOS.
+        # Usar la misma fuente que _populate_devices() para que los IDs coincidan
+        # con _dev_in_ids / _dev_out_ids y el Apply funcione correctamente.
+        all_devs = AudioEngine.list_devices()
 
         _tbl_ss = (
             f'QTableWidget{{background:#111;color:{TEXT_HI};gridline-color:#2a2a2a;'
