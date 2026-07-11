@@ -74,10 +74,13 @@ IR_COLOR    = '#80cbc4'   # verde agua para IR
 
 # ── Paleta de engines (vivos) — SMAART style ─────────────────────────
 ENGINE_PALETTE = [
-    '#3cf53c',   # 0 SMAART verde brillante — engine 1 (live)
-    '#4fc3f7',   # 1 cyan — engine 2
-    '#ffb74d',   # 2 naranja — engine 3
-    '#ce93d8',   # 3 violeta — engine 4
+    '#BF5AF2',   # 0 Violeta  — engine 1  (~380–450 nm)
+    '#0A84FF',   # 1 Azul     — engine 2  (~450–495 nm)
+    '#00E5FF',   # 2 Cian     — engine 3  (~495–530 nm)
+    '#30D158',   # 3 Verde    — engine 4  (~530–560 nm)
+    '#FFD60A',   # 4 Amarillo — engine 5  (~560–590 nm)
+    '#FF9F0A',   # 5 Naranja  — engine 6  (~590–620 nm)
+    '#FF453A',   # 6 Rojo     — engine 7  (~620–750 nm)
 ]
 
 # ── Colormap para espectrograma — estilo thermal / analizador pro ─────

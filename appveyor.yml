@@ -17,6 +17,7 @@ build_script:
   - cmd: >-
       %PYTHON%\python.exe -m PyInstaller --noconfirm --onedir --windowed
       --name Coherence
+      --icon coherence\favicon.ico
       --hidden-import PyQt6.QtCore
       --hidden-import PyQt6.QtGui
       --hidden-import PyQt6.QtWidgets
