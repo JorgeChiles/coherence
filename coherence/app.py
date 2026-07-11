@@ -946,8 +946,9 @@ class MeasurementCanvas(FigureCanvas):
         self._eng_colors = [ENGINE_PALETTE[0], ENGINE_PALETTE[1]]
 
         f0 = np.array([20.0, 20000.0])
-        self.line_tf,     = self.ax_tf.semilogx(f0, [0, 0], color=self._eng_colors[0], lw=2.2, alpha=1.0, label='TF1')
-        self.line_tf2,    = self.ax_tf.semilogx([], [],     color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-', label='TF2')
+        _l0, = self.ax_tf.semilogx(f0, [0, 0], color=self._eng_colors[0], lw=2.2, alpha=1.0, label='TF1')
+        _l1, = self.ax_tf.semilogx([], [],     color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-', label='TF2')
+        self._lines_tf    = [_l0, _l1]
         self.line_tf_avg, = self.ax_tf.semilogx([], [],     color='#ffffff', lw=1.8, alpha=0.85, ls='--', label='AVG')
         # Coherencia: fill blanco semitransparente (estilo SMAART)
         self.line_coh,    = self.ax_coh.semilogx(f0, [0, 0], color=COH_COLOR, lw=0.8, alpha=0.5)
@@ -970,9 +971,15 @@ class MeasurementCanvas(FigureCanvas):
         self.ax_ph.set_yticks([-180, -90, 0, 90, 180])
         self.ax_ph.tick_params(axis='y', labelsize=7, colors=TEXT_MID)
 
-        self.line_ph,     = self.ax_ph.semilogx(f0, [0, 0], color=self._eng_colors[0], lw=2.2, alpha=1.0)
-        self.line_ph2,    = self.ax_ph.semilogx([], [],     color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-')
+        _p0, = self.ax_ph.semilogx(f0, [0, 0], color=self._eng_colors[0], lw=2.2, alpha=1.0)
+        _p1, = self.ax_ph.semilogx([], [],     color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-')
+        self._lines_ph    = [_p0, _p1]
         self.line_ph_avg, = self.ax_ph.semilogx([], [],     color='#ffffff', lw=1.8, alpha=0.85, ls='--')
+        # Aliases backward compat
+        self.line_tf  = self._lines_tf[0]
+        self.line_tf2 = self._lines_tf[1]
+        self.line_ph  = self._lines_ph[0]
+        self.line_ph2 = self._lines_ph[1]
 
         # ── Crosshairs (cursor) — vertical + horizontal por panel ──
         _ck = dict(color=TEXT_MID, lw=0.7, ls=':', alpha=0.0, zorder=20)
@@ -1152,16 +1159,14 @@ class MeasurementCanvas(FigureCanvas):
         TF y Phase del mismo engine siempre usan el mismo color.
         """
         self._eng_colors = list(colors)
-        c0 = colors[0] if len(colors) > 0 else ENGINE_PALETTE[0]
-        c1 = colors[1] if len(colors) > 1 else ENGINE_PALETTE[1]
-        # TF y Phase sincronizan color: mismo engine, mismo color
-        self.line_tf.set_color(c0)
-        self.line_tf2.set_color(c1)
-        self.line_ph.set_color(c0)
-        self.line_ph2.set_color(c1)
+        for i, color in enumerate(colors):
+            if i < len(self._lines_tf):
+                self._lines_tf[i].set_color(color)
+                self._lines_ph[i].set_color(color)
         # IR sigue al engine primario
-        self.line_ir.set_color(c0)
-        self.line_ir_peak.set_color(c0)
+        if colors:
+            self.line_ir.set_color(colors[0])
+            self.line_ir_peak.set_color(colors[0])
         self.draw_idle()
 
     def highlight_engine(self, idx: int, show_avg: bool = False):
@@ -1174,12 +1179,9 @@ class MeasurementCanvas(FigureCanvas):
             self.draw_idle()
             return
 
-        pairs_tf = [(self.line_tf,  self.line_ph,  0),
-                    (self.line_tf2, self.line_ph2, 1)]
-
         if show_avg:
             # Con AVG activo: engines en segundo plano, AVG domina
-            for ltf, lph, i in pairs_tf:
+            for i, (ltf, lph) in enumerate(zip(self._lines_tf, self._lines_ph)):
                 if i == idx:
                     ltf.set(linewidth=1.8, alpha=0.80, zorder=4)
                     lph.set(linewidth=1.8, alpha=0.80, zorder=4)
@@ -1191,13 +1193,13 @@ class MeasurementCanvas(FigureCanvas):
             self.line_ph_avg.set(linewidth=2.6, alpha=1.0, zorder=6)
         else:
             # Sin AVG: engine seleccionado en primer plano, resto visible pero subordinado
-            for ltf, lph, i in pairs_tf:
+            for i, (ltf, lph) in enumerate(zip(self._lines_tf, self._lines_ph)):
                 if i == idx:
                     ltf.set(linewidth=2.2, alpha=1.0, zorder=5)
                     lph.set(linewidth=2.2, alpha=1.0, zorder=5)
                 else:
-                    ltf.set(linewidth=1.2, alpha=0.65, zorder=3)
-                    lph.set(linewidth=1.2, alpha=0.65, zorder=3)
+                    ltf.set(linewidth=1.1, alpha=0.55, zorder=3)
+                    lph.set(linewidth=1.1, alpha=0.55, zorder=3)
             # AVG oculto visualmente (los datos ya se limpian en _toggle_avg)
             self.line_tf_avg.set(linewidth=1.6, alpha=0.0, zorder=2)
             self.line_ph_avg.set(linewidth=1.6, alpha=0.0, zorder=2)
@@ -1210,6 +1212,38 @@ class MeasurementCanvas(FigureCanvas):
         self.line_ir_peak.set(alpha=0.7, zorder=4)
         self.draw_idle()
 
+    def add_tf_engine_line(self, color: str) -> int:
+        """Agrega una línea TF+Phase para un nuevo engine. Retorna el índice."""
+        l, = self.ax_tf.semilogx([], [], color=color, lw=1.2, alpha=0.65)
+        p, = self.ax_ph.semilogx([], [], color=color, lw=1.2, alpha=0.65)
+        self._lines_tf.append(l)
+        self._lines_ph.append(p)
+        return len(self._lines_tf) - 1
+
+    def remove_tf_engine_line(self, idx: int):
+        """Elimina la línea del engine idx. Engines 0 y 1 son permanentes."""
+        if idx < 2 or idx >= len(self._lines_tf):
+            return
+        self._lines_tf[idx].remove()
+        self._lines_ph[idx].remove()
+        del self._lines_tf[idx]
+        del self._lines_ph[idx]
+        self.draw_idle()
+
+    def update_engine_n(self, idx: int, freqs, mag_db, phase_deg):
+        """Actualiza TF + Phase para engines idx >= 2 (sin coherencia ni IR)."""
+        if idx >= len(self._lines_tf):
+            return
+        if freqs is None or mag_db is None:
+            self._lines_tf[idx].set_data([], [])
+            self._lines_ph[idx].set_data([], [])
+            return
+        mask = (freqs >= 20) & (freqs <= 20000)
+        f    = freqs[mask]
+        self._lines_tf[idx].set_data(f, mag_db[mask])
+        ph_wrap = ((phase_deg[mask] + 180.0) % 360.0) - 180.0
+        self._lines_ph[idx].set_data(f, ph_wrap)
+
     # ── Update ────────────────────────────────────────────────────────
 
     def update_plots(self, freqs, gamma2, mag_db, phase_deg, gxx_db, ir,
@@ -1217,8 +1251,8 @@ class MeasurementCanvas(FigureCanvas):
                      coh_squared=True, phase_as_gd=False):
         # Sincronizar COLOR de Phase con TF cada frame (garantiza que siempre coincidan).
         # El alpha/linewidth lo controla highlight_engine — NO lo tocamos aquí.
-        self.line_ph.set_color(self.line_tf.get_color())
-        self.line_ph2.set_color(self.line_tf2.get_color())
+        for ltf, lph in zip(self._lines_tf, self._lines_ph):
+            lph.set_color(ltf.get_color())
 
         # Guardar para interpolación del cursor
         self._last_freqs     = freqs
@@ -4222,6 +4256,12 @@ class MainWindow(QMainWindow):
             self._running_tfs = []
         self._running_tfs.append(rtf)
 
+        # Si hay más de 2 engines, agregar línea dinámica al canvas
+        if len(self._tf_engines) > 2:
+            self.canvas_meas.add_tf_engine_line(color)
+            if self._secondary_panel is not None and hasattr(self._secondary_panel, 'canvas_meas'):
+                self._secondary_panel.canvas_meas.add_tf_engine_line(color)
+
         # Sincronizar colores del canvas con los engines registrados
         colors = [e._color for e in self._tf_engines]
         self.canvas_meas.set_engine_colors(colors)
@@ -4243,6 +4283,11 @@ class MainWindow(QMainWindow):
             self.engine.remove_meas_channel(idx)
         if hasattr(self, '_running_tfs') and idx < len(self._running_tfs):
             self._running_tfs.pop(idx)
+        # Si era engine 3+, quitar línea del canvas
+        if idx >= 2:
+            self.canvas_meas.remove_tf_engine_line(idx)
+            if self._secondary_panel is not None and hasattr(self._secondary_panel, 'canvas_meas'):
+                self._secondary_panel.canvas_meas.remove_tf_engine_line(idx)
 
     # ── Spectrum Engine management ────────────────────────────────────
 
@@ -5590,13 +5635,11 @@ class MainWindow(QMainWindow):
         """
         def _clear_eng(canvas, i):
             if i == 0:
-                canvas.line_tf.set_data([], [])
-                canvas.line_ph.set_data([], [])
                 canvas.line_ir.set_data([], [])
                 canvas.line_ir_peak.set_xdata([0, 0])
-            elif i == 1:
-                canvas.line_tf2.set_data([], [])
-                canvas.line_ph2.set_data([], [])
+            if i < len(canvas._lines_tf):
+                canvas._lines_tf[i].set_data([], [])
+                canvas._lines_ph[i].set_data([], [])
             canvas.draw_idle()
 
         if active:
@@ -6780,6 +6823,9 @@ class MainWindow(QMainWindow):
         # Engines 2+ (si existen y están activos)
         for _ei in range(2, len(self._tf_engines)):
             if not self._tf_engines[_ei].active:
+                self.canvas_meas.update_engine_n(_ei, None, None, None)
+                if self._secondary_panel is not None and hasattr(self._secondary_panel, 'canvas_meas'):
+                    self._secondary_panel.canvas_meas.update_engine_n(_ei, None, None, None)
                 continue
             _y_ei    = self.engine.get_buffer_meas(_ei)
             _delay_ei = self._tf_engines[_ei]._delay_comp_ms
@@ -6788,7 +6834,7 @@ class MainWindow(QMainWindow):
                 if _signal_ok:
                     _rtf_ei.push(x, _y_ei)
                 if _rtf_ei.ready:
-                    _, _g2ei, _mei, _phei, _ = _rtf_ei.get_tf(
+                    _freqs_ei, _g2ei, _mei, _phei, _ = _rtf_ei.get_tf(
                         delay_comp_s=_delay_ei / 1000.0,
                         smooth_fraction=smooth_frac)
                     _gain_ei = self._tf_engines[_ei]._gain_offset_db
@@ -6798,6 +6844,17 @@ class MainWindow(QMainWindow):
                     _all_lin.append(10.0 ** (_mei / 20.0))
                     _all_ph.append(_phei)
                     _all_g2.append(_g2ei)
+                    self.canvas_meas.update_engine_n(_ei, _freqs_ei, _mei, _phei)
+                    if self._secondary_panel is not None and hasattr(self._secondary_panel, 'canvas_meas'):
+                        self._secondary_panel.canvas_meas.update_engine_n(_ei, _freqs_ei, _mei, _phei)
+                else:
+                    self.canvas_meas.update_engine_n(_ei, None, None, None)
+                    if self._secondary_panel is not None and hasattr(self._secondary_panel, 'canvas_meas'):
+                        self._secondary_panel.canvas_meas.update_engine_n(_ei, None, None, None)
+            else:
+                self.canvas_meas.update_engine_n(_ei, None, None, None)
+                if self._secondary_panel is not None and hasattr(self._secondary_panel, 'canvas_meas'):
+                    self._secondary_panel.canvas_meas.update_engine_n(_ei, None, None, None)
 
         mag_avg = ph_avg = g2_avg = None
         if len(_all_lin) > 1:
