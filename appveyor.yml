@@ -2,15 +2,20 @@ version: '0.1.{build}'
 
 image: Visual Studio 2022
 
+environment:
+  PYTHON: "C:\\Python311-x64"
+
 build: off
 
 install:
-  - cmd: python --version
-  - cmd: pip install pyqt6 matplotlib numpy sounddevice scipy pyinstaller
+  - cmd: "%PYTHON%\\python.exe --version"
+  - cmd: "%PYTHON%\\python.exe -m pip install --upgrade pip"
+  - cmd: "%PYTHON%\\python.exe -m pip install --only-binary :all: PyQt6 PyQt6-Qt6 PyQt6-sip"
+  - cmd: "%PYTHON%\\python.exe -m pip install matplotlib numpy sounddevice scipy pyinstaller"
 
 build_script:
   - cmd: >-
-      pyinstaller --noconfirm --onedir --windowed
+      %PYTHON%\python.exe -m PyInstaller --noconfirm --onedir --windowed
       --name Coherence
       --hidden-import PyQt6.QtCore
       --hidden-import PyQt6.QtGui
