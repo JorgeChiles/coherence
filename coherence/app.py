@@ -3735,14 +3735,16 @@ class MainWindow(QMainWindow):
         btn_tr_play  = QPushButton('▶')
         btn_tr_stop  = QPushButton('■')
         btn_tr_pause = QPushButton('⏸')
-        for b in (btn_tr_play, btn_tr_stop, btn_tr_pause):
+        for b in (btn_tr_stop, btn_tr_pause):   # ▶ master oculto — usar ▶ de cada engine
             b.setStyleSheet(_tr_style)
             tr_row.addWidget(b, stretch=1)
+        btn_tr_play.setStyleSheet(_tr_style)
+        btn_tr_play.setVisible(False)
         btn_tr_play.clicked.connect(self._on_start)
         btn_tr_stop.clicked.connect(self._on_stop)
         btn_tr_pause.setCheckable(True)
         btn_tr_pause.clicked.connect(self._on_freeze_panel)
-        self._all_start_btns.append(btn_tr_play)
+        # btn_tr_play NO se agrega a _all_start_btns — está oculto
         self._all_stop_btns.append(btn_tr_stop)
         self._all_freeze_btns.append(btn_tr_pause)
         self.btn_freeze_p = btn_tr_pause   # alias para shortcut F
