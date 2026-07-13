@@ -2750,6 +2750,7 @@ class MainWindow(QMainWindow):
         self._mic_cal         = None   # tuple (freqs, dB_correction) o None — kept for backward compat
         self._mic_cal_name    = ''     # nombre del archivo cargado
         self._channel_cal: dict = {}   # {ch_number (1-based): {'freqs': np.array, 'db': np.array, 'name': str}}
+        self._channel_spl_offset: dict = {}  # {ch (1-based): float dB offset (dBFS→dBSPL)}
         self._target_curves: list = []   # list of dicts: {freqs, db, color, name}
         self._show_ch2        = True   # mostrar 2do canal en gráficas
         self._show_avg        = True   # mostrar promedio
@@ -2778,8 +2779,8 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self._refresh)
 
         self._set_stopped()
-        # Vista inicial: Spectrum (RTA) al abrir
-        self._on_view_mode_changed('Spectrum')
+        # Vista inicial: Transfer Function (IR + Magnitude + Phase)
+        self._on_view_mode_changed('Full')
 
     # ── Central widget ────────────────────────────────────────────────
 
@@ -3444,7 +3445,7 @@ class MainWindow(QMainWindow):
         # Lista de presets
         _PRESETS = [
             ('S', 'Spectrum',             lambda: self._on_view_mode_changed('Spectrum')),
-            ('T', 'Transfer Function',    lambda: self._on_view_mode_changed('Magnitude')),
+            ('T', 'Transfer Function',    lambda: self._on_view_mode_changed('Full')),
             ('1', 'Spectrograph',         lambda: self._on_view_mode_changed('Spectrograph')),
             ('2', 'Magnitude / Phase',    lambda: self._on_view_mode_changed('Phase')),
             ('3', 'RTA / RTA',            lambda: self._on_view_mode_changed('Spectrum')),
@@ -3779,9 +3780,9 @@ class MainWindow(QMainWindow):
         avg_row = QHBoxLayout(); avg_row.setSpacing(6)
         avg_row.addWidget(lbl('Averaging Depth:', color=TEXT_MID, size=10))
         self.cmb_avg = QComboBox()
-        self._avg_values = [1, 4, 8, 16, 32]
+        self._avg_values = [1, 2, 4, 8, 16, 32, 64, 128, 256]
         for v in self._avg_values: self.cmb_avg.addItem(str(v))
-        self.cmb_avg.setCurrentIndex(2)   # 8 default
+        self.cmb_avg.setCurrentIndex(4)   # 16 default
         self.cmb_avg.setFixedWidth(68)
         self.cmb_avg.currentIndexChanged.connect(self._on_avg_changed)
         avg_row.addWidget(self.cmb_avg)
@@ -5092,10 +5093,10 @@ class MainWindow(QMainWindow):
         avg_row.setSpacing(6)
         avg_row.addWidget(lbl('Averaging Depth:', color=TEXT_MID, size=9))
         self.cmb_avg_spec = QComboBox()
-        self._avg_spec_values = [1, 2, 4, 6, 8, 12, 16, 32]
+        self._avg_spec_values = [1, 2, 4, 8, 16, 32, 64, 128, 256]
         for _av in self._avg_spec_values:
             self.cmb_avg_spec.addItem(str(_av))
-        self.cmb_avg_spec.setCurrentIndex(2)   # 4 por defecto (igual que SMAART)
+        self.cmb_avg_spec.setCurrentIndex(4)   # 16 default
         avg_row.addWidget(self.cmb_avg_spec, stretch=1)
         layout.addLayout(avg_row)
 
@@ -5332,7 +5333,13 @@ class MainWindow(QMainWindow):
             w._btn.adjustSize()
             w.setVisible(False)
 
-        if mode == 'Magnitude':
+        if mode == 'Full':
+            self._wrap_meas.setVisible(True)
+            self.canvas_meas.set_view_mode('full')   # IR + TF + Phase completo
+            self._current_view = 'magnitude'
+            settings_idx = 0
+
+        elif mode == 'Magnitude':
             self._wrap_meas.setVisible(True)
             self.canvas_meas.set_view_mode('magnitude_only')   # IR + TF, sin Phase
             self._current_view = 'magnitude'
@@ -5593,7 +5600,7 @@ class MainWindow(QMainWindow):
     def _show_spl_settings(self):
         dlg = QDialog(self)
         dlg.setWindowTitle('SPL Meter Settings')
-        dlg.setFixedSize(280, 220)
+        dlg.setFixedSize(280, 260)
         dlg.setStyleSheet(self.styleSheet())
         lay = QVBoxLayout(dlg)
         form = QFormLayout(); form.setSpacing(8)
@@ -5603,6 +5610,13 @@ class MainWindow(QMainWindow):
         spn_offset.setDecimals(1); spn_offset.setSuffix(' dB')
         spn_offset.setValue(self._spl_offset_db)
         form.addRow('Cal. Offset (dBFS→SPL):', spn_offset)
+
+        btn_spl_cal = QPushButton('Calibrate 94 dB…')
+        btn_spl_cal.setToolTip(
+            'Place a 94 dBSPL source at 1 kHz next to the mic, then click to calibrate.')
+        btn_spl_cal.setMinimumHeight(26)
+        btn_spl_cal.clicked.connect(self._show_spl_calibration_dialog)
+        form.addRow('', btn_spl_cal)
 
         spn_warn = QDoubleSpinBox()
         spn_warn.setRange(0.0, 160.0); spn_warn.setSingleStep(1.0)
@@ -5629,6 +5643,115 @@ class MainWindow(QMainWindow):
             self._spl_offset_db = spn_offset.value()
             self._spl_warn_db   = spn_warn.value()
             self._spl_clip_db   = spn_clip.value()
+
+    def _show_spl_calibration_dialog(self):
+        """
+        SPL calibration: play a 94 dBSPL 1 kHz tone, measure RMS over 2 seconds,
+        compute and store the dBFS→dBSPL offset for the SPL channel.
+        """
+        from PyQt6.QtCore import QTimer as _QT
+        import numpy as np
+
+        ch = getattr(self.engine, 'ch_spl', 1)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle('SPL Calibration — 94 dB @ 1 kHz')
+        dlg.setFixedSize(400, 220)
+        dlg.setStyleSheet(
+            f'QDialog{{background:#1a1a1a;color:{TEXT_HI};font-size:11px;}}'
+            f'QLabel{{background:transparent;color:{TEXT_HI};}}'
+            f'QPushButton{{background:#2a2a2a;color:{TEXT_HI};border:1px solid #444;'
+            f'border-radius:4px;padding:5px 20px;font-size:11px;}}'
+            f'QPushButton:hover{{background:#333;}}')
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(20, 16, 20, 14)
+        lay.setSpacing(10)
+
+        lbl_inst = QLabel(
+            f'<b>Channel {ch} — SPL Calibration</b><br><br>'
+            'Place a <b>94 dBSPL reference source</b> (pistonphone / calibrator)<br>'
+            'at 1 kHz next to the measurement microphone,<br>'
+            'then click <b>Start Calibration</b>.')
+        lbl_inst.setWordWrap(True)
+        lbl_inst.setStyleSheet(f'color:{TEXT_MID};font-size:10px;background:transparent;')
+        lay.addWidget(lbl_inst)
+
+        lbl_status = QLabel('Ready.')
+        lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_status.setStyleSheet(f'color:{GREEN};font-size:12px;font-weight:bold;background:transparent;')
+        lay.addWidget(lbl_status)
+
+        lbl_result = QLabel('')
+        lbl_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_result.setStyleSheet(f'color:{TEXT_HI};font-size:11px;background:transparent;')
+        lay.addWidget(lbl_result)
+
+        btn_row = QHBoxLayout()
+        btn_start  = QPushButton('Start Calibration')
+        btn_close  = QPushButton('Close')
+        btn_row.addWidget(btn_start)
+        btn_row.addWidget(btn_close)
+        lay.addLayout(btn_row)
+
+        _samples = []
+        _timer   = [None]
+
+        def _collect():
+            try:
+                buf = self.engine.get_buffer_meas(ch - 1)
+                if buf is not None and len(buf) > 0:
+                    rms = float(np.sqrt(np.mean(buf.astype(float) ** 2)))
+                    if rms > 1e-10:
+                        _samples.append(rms)
+            except Exception:
+                pass
+
+        def _start_cal():
+            if not self.engine.running:
+                lbl_status.setText('⚠  Start the audio stream first (▶)')
+                lbl_status.setStyleSheet(f'color:#ffaa44;font-size:11px;font-weight:bold;background:transparent;')
+                return
+            _samples.clear()
+            btn_start.setEnabled(False)
+            lbl_status.setText('Measuring… (2 seconds)')
+            lbl_status.setStyleSheet(f'color:{GREEN};font-size:12px;font-weight:bold;background:transparent;')
+
+            # Collect 20 samples over 2 seconds
+            _collect_timer = _QT(dlg)
+            _collect_timer.setInterval(100)
+            _collect_timer.timeout.connect(_collect)
+            _collect_timer.start()
+            _timer[0] = _collect_timer
+
+            def _finish():
+                _collect_timer.stop()
+                if not _samples:
+                    lbl_status.setText('⚠  No signal detected. Check input device.')
+                    lbl_status.setStyleSheet(f'color:#ff6644;font-size:11px;font-weight:bold;background:transparent;')
+                    btn_start.setEnabled(True)
+                    return
+                avg_rms  = float(np.mean(_samples))
+                avg_dbfs = 20.0 * np.log10(avg_rms + 1e-12)
+                offset   = 94.0 - avg_dbfs
+                self._channel_spl_offset[ch] = offset
+                # Also update the legacy global offset for backward compat
+                self._spl_offset_db = offset
+                lbl_status.setText(f'✓  Calibrated!')
+                lbl_status.setStyleSheet(f'color:{GREEN};font-size:13px;font-weight:bold;background:transparent;')
+                lbl_result.setText(
+                    f'Measured: {avg_dbfs:.1f} dBFS  →  Offset: {offset:+.1f} dB  '
+                    f'(Ch {ch} = 94 dBSPL)')
+                btn_start.setEnabled(True)
+                self.sb.showMessage(
+                    f'✓  SPL cal Ch {ch}: {avg_dbfs:.1f} dBFS = 94.0 dBSPL  '
+                    f'(offset {offset:+.1f} dB)', 6000)
+
+            _QT.singleShot(2100, _finish)
+
+        btn_start.clicked.connect(_start_cal)
+        btn_close.clicked.connect(dlg.accept)
+        dlg.exec()
 
     def _show_display_settings(self):
         dlg = QDialog(self)
@@ -5960,25 +6083,52 @@ class MainWindow(QMainWindow):
                 sel_dev = next((d for d in devs if d['id'] == _sel['in']), None)
                 n_ch = min(sel_dev['in'], 16) if sel_dev else 8
 
-                ch_tbl = QTableWidget(n_ch, 3)
+                ch_tbl = QTableWidget(n_ch, 4)
                 ch_tbl.setStyleSheet(_tbl_ss)
-                ch_tbl.setHorizontalHeaderLabels(['Ch', 'Channel Name', 'Mic Correction Curve'])
-                ch_tbl.horizontalHeader().setSectionResizeMode(0, ch_tbl.horizontalHeader().ResizeMode.Fixed)
-                ch_tbl.horizontalHeader().setSectionResizeMode(1, ch_tbl.horizontalHeader().ResizeMode.Stretch)
-                ch_tbl.horizontalHeader().setSectionResizeMode(2, ch_tbl.horizontalHeader().ResizeMode.Fixed)
-                ch_tbl.setColumnWidth(0, 38)
-                ch_tbl.setColumnWidth(2, 200)
+                ch_tbl.setHorizontalHeaderLabels(['Ch', 'Level', 'Channel Name', 'Mic Correction Curve'])
+                hh = ch_tbl.horizontalHeader()
+                hh.setSectionResizeMode(0, hh.ResizeMode.Fixed)
+                hh.setSectionResizeMode(1, hh.ResizeMode.Fixed)
+                hh.setSectionResizeMode(2, hh.ResizeMode.Stretch)
+                hh.setSectionResizeMode(3, hh.ResizeMode.Fixed)
+                ch_tbl.setColumnWidth(0, 32)
+                ch_tbl.setColumnWidth(1, 110)
+                ch_tbl.setColumnWidth(3, 190)
                 ch_tbl.setSelectionMode(ch_tbl.SelectionMode.NoSelection)
                 ch_tbl.setEditTriggers(ch_tbl.EditTrigger.NoEditTriggers)
                 ch_tbl.verticalHeader().setVisible(False)
-                ch_tbl.setFixedHeight(min(n_ch * 28 + 28, 200))
+                ch_tbl.setFixedHeight(min(n_ch * 28 + 28, 220))
+
+                # Level bar widgets — one QProgressBar per channel
+                _level_bars = []   # indexed by ch_idx (0-based)
+
+                _pb_ss = (
+                    'QProgressBar{background:#0a0a0a;border:1px solid #222;border-radius:2px;}'
+                    'QProgressBar::chunk{background:qlineargradient('
+                    'x1:0,y1:0,x2:1,y2:0,'
+                    'stop:0 #1a6a1a,stop:0.6 #2aaa2a,stop:0.85 #aaaa00,stop:1 #aa2222);'
+                    'border-radius:1px;}')
 
                 def _build_ch_table(n):
                     ch_tbl.setRowCount(n)
+                    _level_bars.clear()
                     for ci in range(n):
                         ch_num = ci + 1
                         ch_tbl.setItem(ci, 0, QTableWidgetItem(str(ch_num)))
-                        ch_tbl.setItem(ci, 1, QTableWidgetItem(f'Input {ch_num}'))
+
+                        # Level meter bar
+                        pb = QProgressBar()
+                        pb.setRange(0, 100)
+                        pb.setValue(0)
+                        pb.setTextVisible(False)
+                        pb.setFixedHeight(14)
+                        pb.setStyleSheet(_pb_ss)
+                        _level_bars.append(pb)
+                        pw = QWidget(); pl = QHBoxLayout(pw)
+                        pl.setContentsMargins(4, 4, 4, 4); pl.addWidget(pb)
+                        ch_tbl.setCellWidget(ci, 1, pw)
+
+                        ch_tbl.setItem(ci, 2, QTableWidgetItem(f'Input {ch_num}'))
 
                         cal = _ch_cal_local.get(ch_num)
                         btn_label = f'✓ {cal["name"]}' if cal else 'None  ＋'
@@ -6018,10 +6168,36 @@ class MainWindow(QMainWindow):
                             return _handler
 
                         btn_cal_ch.clicked.connect(_make_cal_handler())
-                        ch_tbl.setCellWidget(ci, 2, btn_cal_ch)
+                        ch_tbl.setCellWidget(ci, 3, btn_cal_ch)
 
                 _build_ch_table(n_ch)
                 pv.addWidget(ch_tbl)
+
+                # ── Live level meter timer ─────────────────────────────
+                import numpy as _np_io
+                _meter_timer = QTimer(dlg)
+                _meter_timer.setInterval(80)   # ~12 fps
+
+                def _update_meters():
+                    if not self.engine.running:
+                        return
+                    for ci, pb in enumerate(_level_bars):
+                        try:
+                            buf = self.engine.get_buffer_meas(ci)
+                            if buf is not None and len(buf) > 0:
+                                rms = float(_np_io.sqrt(_np_io.mean(buf.astype(float) ** 2)))
+                                db  = 20.0 * _np_io.log10(max(rms, 1e-10))
+                                # Map -60 dBFS..0 dBFS → 0..100
+                                pct = int(max(0.0, min(100.0, (db + 60.0) * 100.0 / 60.0)))
+                                pb.setValue(pct)
+                            else:
+                                pb.setValue(0)
+                        except Exception:
+                            pb.setValue(0)
+
+                _meter_timer.timeout.connect(_update_meters)
+                _meter_timer.start()
+                dlg.finished.connect(_meter_timer.stop)
 
             return panel
 
@@ -6185,6 +6361,7 @@ class MainWindow(QMainWindow):
         om.addAction('Signal Generator…',            self._show_signal_generator_dialog).setShortcut('Alt+N')
         om.addSeparator()
         om.addAction('Target Curves…',               self._show_target_curves_dialog).setShortcut('Alt+X')
+        om.addAction('Optimize to Target…',          self._show_optimize_dialog).setShortcut('Alt+Z')
         om.addAction('Weighting Curves…',            self._show_weighting_dialog)
         om.addSeparator()
         om.addAction('Load Mic Correction…',         self._load_mic_cal)
@@ -6898,7 +7075,9 @@ class MainWindow(QMainWindow):
         else:
             spl_data  = self.engine.get_buffer_spl()
             rms_spl_f = 20.0 * np.log10(float(np.sqrt(np.mean(spl_data ** 2))) + 1e-9)
-            spl_db    = rms_spl_f + self._spl_offset_db
+            _spl_ch = getattr(self.engine, 'ch_spl', 1)
+            _spl_cal = self._channel_spl_offset.get(_spl_ch, 0.0)
+            spl_db = rms_spl_f + self._spl_offset_db + _spl_cal
 
             if spl_db >= self._spl_clip_db:
                 spl_color = '#ef5350'
@@ -8573,6 +8752,261 @@ class MainWindow(QMainWindow):
         lay.addWidget(bb)
         dlg.exec()
 
+    def _show_optimize_dialog(self):
+        """
+        Intelligent optimization: compare current TF measurement to a target curve,
+        compute the delta, and suggest parametric EQ corrections.
+        """
+        import numpy as np
+
+        # Validate prerequisites
+        if not self._target_curves:
+            QMessageBox.information(self, 'No Target Curve',
+                'Load a target curve first via Options → Target Curves…')
+            return
+        if self.canvas_meas._last_freqs is None:
+            QMessageBox.information(self, 'No Measurement',
+                'Run a Transfer Function measurement first.')
+            return
+
+        freqs_m  = self.canvas_meas._last_freqs
+        mag_m    = self.canvas_meas._last_mag_db
+
+        if freqs_m is None or mag_m is None:
+            QMessageBox.information(self, 'No Data', 'No magnitude data available.')
+            return
+
+        # Use first target curve (or let user pick if multiple)
+        if len(self._target_curves) == 1:
+            tc = self._target_curves[0]
+        else:
+            # Let user select target curve
+            from PyQt6.QtWidgets import QInputDialog
+            names = [t['name'] for t in self._target_curves]
+            name, ok = QInputDialog.getItem(self, 'Select Target', 'Target curve:', names, 0, False)
+            if not ok:
+                return
+            tc = next(t for t in self._target_curves if t['name'] == name)
+
+        freqs_t = tc['freqs']
+        mag_t   = tc['db']
+
+        # Interpolate target to measurement frequencies
+        mag_t_interp = np.interp(freqs_m, freqs_t, mag_t)
+        delta = mag_t_interp - mag_m   # positive = need boost, negative = need cut
+
+        # Smooth delta for stable peak detection
+        try:
+            from scipy.ndimage import uniform_filter1d
+            delta_s = uniform_filter1d(delta, size=max(3, len(delta) // 80))
+        except ImportError:
+            delta_s = delta
+
+        # Detect peaks and valleys in delta (= EQ bands needed)
+        try:
+            from scipy.signal import find_peaks
+            peak_idx,  _ = find_peaks( delta_s, height=1.0, distance=max(5, len(delta)//60), prominence=1.2)
+            valley_idx,_ = find_peaks(-delta_s, height=1.0, distance=max(5, len(delta)//60), prominence=1.2)
+        except ImportError:
+            peak_idx = valley_idx = np.array([], dtype=int)
+
+        def _estimate_q(freqs, delta_smooth, idx, gain):
+            """Estimate Q from bandwidth at gain/2."""
+            half = abs(gain) / 2.0
+            direction = 1 if gain > 0 else -1
+            mask = (direction * delta_smooth) >= half
+            idxs = np.where(mask)[0]
+            if len(idxs) < 2:
+                return 2.0
+            bw_hz = freqs[idxs[-1]] - freqs[idxs[0]]
+            q = freqs[idx] / bw_hz if bw_hz > 0 else 2.0
+            return max(0.4, min(q, 12.0))
+
+        suggestions = []
+        for i in peak_idx:
+            g = float(delta_s[i])
+            q = _estimate_q(freqs_m, delta_s, i, g)
+            suggestions.append({'freq': float(freqs_m[i]), 'gain': g, 'q': q})
+        for i in valley_idx:
+            g = float(-delta_s[i])   # negative
+            q = _estimate_q(freqs_m, -delta_s, i, g)
+            suggestions.append({'freq': float(freqs_m[i]), 'gain': g, 'q': q})
+        suggestions.sort(key=lambda x: x['freq'])
+
+        # Also compute 1/3-octave ISO average corrections
+        _ISO = np.array([20,25,31.5,40,50,63,80,100,125,160,200,250,315,400,
+                         500,630,800,1000,1250,1600,2000,2500,3150,4000,5000,
+                         6300,8000,10000,12500,16000,20000], dtype=float)
+        iso_gains = []
+        for fc in _ISO:
+            fl, fh = fc / 2**(1/6), fc * 2**(1/6)
+            mask = (freqs_m >= fl) & (freqs_m <= fh)
+            if mask.any():
+                iso_gains.append((fc, float(np.mean(delta[mask]))))
+
+        # ── Build the dialog ────────────────────────────────────────────
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f'Optimize: Measurement → {tc["name"]}')
+        dlg.resize(700, 560)
+        dlg.setStyleSheet(
+            f'QDialog{{background:{BG_APP};color:{TEXT_HI};font-size:11px;}}'
+            f'QLabel{{color:{TEXT_MID};background:transparent;}}'
+            f'QTableWidget{{background:#111;color:{TEXT_HI};gridline-color:#222;'
+            f'border:1px solid #2a2a2a;font-size:10px;}}'
+            f'QHeaderView::section{{background:#222;color:{TEXT_MID};'
+            f'border:none;padding:3px 6px;font-size:9px;letter-spacing:1px;}}'
+            f'QPushButton{{background:#252525;color:{TEXT_HI};border:1px solid #444;'
+            f'border-radius:3px;padding:4px 14px;font-size:10px;}}'
+            f'QPushButton:hover{{background:#333;}}')
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(8)
+
+        hdr = QLabel(f'OPTIMIZATION  ·  {tc["name"]}')
+        hdr.setStyleSheet(f'color:{ACCENT};font-size:9px;letter-spacing:2px;font-weight:bold;background:transparent;')
+        lay.addWidget(hdr)
+
+        # ── Delta miniplot ──────────────────────────────────────────────
+        try:
+            import matplotlib
+            matplotlib.use('QtAgg')
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+
+            fig, ax = plt.subplots(figsize=(6, 2.2), dpi=80)
+            fig.patch.set_facecolor('#111111')
+            ax.set_facecolor('#111111')
+            ax.plot(freqs_m, delta, color='#444', linewidth=0.8, alpha=0.6)
+            ax.plot(freqs_m, delta_s, color=tc['color'], linewidth=1.4)
+            ax.axhline(0, color='#3a3a3a', linewidth=0.8, linestyle='--')
+            ax.fill_between(freqs_m, 0, delta_s,
+                            where=(delta_s > 0), color='#2a4a2a', alpha=0.4)
+            ax.fill_between(freqs_m, 0, delta_s,
+                            where=(delta_s < 0), color='#4a2a2a', alpha=0.4)
+            ax.set_xscale('log')
+            ax.set_xlim(20, 20000)
+            ax.set_xlabel('Frequency (Hz)', color='#666', fontsize=7)
+            ax.set_ylabel('Correction (dB)', color='#666', fontsize=7)
+            ax.tick_params(colors='#555', labelsize=7)
+            ax.grid(True, which='both', color='#222', linewidth=0.5)
+            ax.set_title('Required correction (Target − Measurement)', color='#888', fontsize=8)
+            fig.tight_layout()
+
+            canvas_mini = FigureCanvasQTAgg(fig)
+            canvas_mini.setFixedHeight(180)
+            lay.addWidget(canvas_mini)
+            plt.close(fig)
+        except Exception:
+            pass   # matplotlib unavailable
+
+        # ── Tabs: Parametric EQ / 1/3-Oct GEQ ─────────────────────────
+        tabs = QTabWidget()
+        tabs.setStyleSheet(
+            f'QTabBar::tab{{background:#252525;color:{TEXT_MID};padding:4px 16px;'
+            f'border:1px solid #333;border-bottom:none;border-radius:3px 3px 0 0;}}'
+            f'QTabBar::tab:selected{{background:#1a1a1a;color:{TEXT_HI};}}'
+            f'QTabWidget::pane{{border:1px solid #333;background:#1a1a1a;}}')
+        lay.addWidget(tabs, stretch=1)
+
+        # Tab 1 — Parametric EQ
+        peq_w = QWidget()
+        peq_lay = QVBoxLayout(peq_w)
+        peq_lay.setContentsMargins(6, 6, 6, 6)
+
+        if suggestions:
+            peq_tbl = QTableWidget(len(suggestions), 3)
+            peq_tbl.setHorizontalHeaderLabels(['Frequency (Hz)', 'Gain (dB)', 'Q'])
+            peq_tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+            peq_tbl.verticalHeader().setVisible(False)
+            peq_tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+            peq_tbl.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+            for row_i, s in enumerate(suggestions):
+                it_f = QTableWidgetItem(f'{s["freq"]:.0f} Hz')
+                it_g = QTableWidgetItem(f'{s["gain"]:+.1f} dB')
+                it_q = QTableWidgetItem(f'{s["q"]:.2f}')
+                it_g.setForeground(QColor('#4aaa4a' if s['gain'] > 0 else '#ff6666'))
+                for it in (it_f, it_g, it_q):
+                    it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                peq_tbl.setItem(row_i, 0, it_f)
+                peq_tbl.setItem(row_i, 1, it_g)
+                peq_tbl.setItem(row_i, 2, it_q)
+            peq_lay.addWidget(peq_tbl)
+        else:
+            lbl_no = QLabel('No significant corrections needed (delta < 1 dB everywhere).')
+            lbl_no.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_no.setStyleSheet(f'color:{GREEN};font-size:11px;')
+            peq_lay.addWidget(lbl_no)
+
+        tabs.addTab(peq_w, 'Parametric EQ')
+
+        # Tab 2 — 1/3-Oct GEQ
+        geq_w = QWidget()
+        geq_lay = QVBoxLayout(geq_w)
+        geq_lay.setContentsMargins(6, 6, 6, 6)
+
+        geq_tbl = QTableWidget(len(iso_gains), 2)
+        geq_tbl.setHorizontalHeaderLabels(['1/3-Oct Center (Hz)', 'Correction (dB)'])
+        geq_tbl.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        geq_tbl.verticalHeader().setVisible(False)
+        geq_tbl.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        for row_i, (fc, gain) in enumerate(iso_gains):
+            it_f = QTableWidgetItem(f'{int(fc)} Hz')
+            it_g = QTableWidgetItem(f'{gain:+.1f} dB')
+            it_g.setForeground(QColor('#4aaa4a' if gain > 0 else '#ff6666'))
+            for it in (it_f, it_g):
+                it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            geq_tbl.setItem(row_i, 0, it_f)
+            geq_tbl.setItem(row_i, 1, it_g)
+        geq_lay.addWidget(geq_tbl)
+
+        tabs.addTab(geq_w, '1/3-Oct GEQ')
+
+        # ── Buttons ─────────────────────────────────────────────────────
+        btn_row_h = QHBoxLayout()
+        btn_export = QPushButton('Export .txt…')
+        btn_delta  = QPushButton('Show Delta on Graph')
+        btn_close  = QPushButton('Close')
+
+        def _export():
+            path, _ = QFileDialog.getSaveFileName(
+                dlg, 'Export EQ Corrections', os.path.expanduser('~'),
+                'Text files (*.txt);;All files (*)')
+            if not path:
+                return
+            lines = [f'# Coherence — Optimization: Measurement vs "{tc["name"]}"',
+                     f'# Generated: {__import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M")}',
+                     '', '## PARAMETRIC EQ CORRECTIONS', 'Freq (Hz)  Gain (dB)  Q']
+            for s in suggestions:
+                lines.append(f'{s["freq"]:.0f}  {s["gain"]:+.1f}  {s["q"]:.2f}')
+            lines += ['', '## 1/3-OCTAVE GEQ CORRECTIONS', 'Freq (Hz)  Gain (dB)']
+            for fc, g in iso_gains:
+                lines.append(f'{int(fc)}  {g:+.1f}')
+            with open(path, 'w') as f:
+                f.write('\n'.join(lines))
+            self.sb.showMessage(f'✓  Exported: {os.path.basename(path)}', 4000)
+
+        def _show_delta():
+            color = '#FF9F0A'
+            self.canvas_meas.add_target_curve(freqs_m, mag_m + delta_s, color, f'Δ {tc["name"]}')
+            self._target_curves.append({
+                'freqs': freqs_m, 'db': mag_m + delta_s,
+                'color': color, 'name': f'Δ {tc["name"]}'})
+            self.sb.showMessage('Delta curve added to Magnitude graph', 3000)
+            btn_delta.setEnabled(False)
+
+        btn_export.clicked.connect(_export)
+        btn_delta.clicked.connect(_show_delta)
+        btn_close.clicked.connect(dlg.accept)
+
+        btn_row_h.addWidget(btn_export)
+        btn_row_h.addWidget(btn_delta)
+        btn_row_h.addStretch()
+        btn_row_h.addWidget(btn_close)
+        lay.addLayout(btn_row_h)
+
+        dlg.exec()
+
     def _show_weighting_dialog(self):
         """Selección de curva de ponderación A/C/Z."""
         from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QButtonGroup,
@@ -8865,7 +9299,7 @@ class MainWindow(QMainWindow):
             w.setVisible(not text or text in name)
 
     def _save_spectrum_trace(self):
-        """Guarda el spectrum actual como traza de referencia visual."""
+        """Save spectrum trace with name / description / color dialog."""
         lev_x = self.canvas_spec._last_lx
         if lev_x is None:
             self.sb.showMessage('⚠  No spectrum data — start the measurement first.', 3000)
@@ -8873,17 +9307,105 @@ class MainWindow(QMainWindow):
         lev_y = self.canvas_spec._last_ly
         if lev_y is None:
             lev_y = lev_x
-        color = TRACE_PALETTE[len(self._sp_traces) % len(TRACE_PALETTE)]
+
+        if len(self._sp_traces) >= MAX_TRACES:
+            self.sb.showMessage(f'⚠  Maximum {MAX_TRACES} traces. Delete one before saving.', 4000)
+            return
+
+        default_name  = f'Sp-{len(self._sp_traces) + 1}'
+        default_color = TRACE_PALETTE[len(self._sp_traces) % len(TRACE_PALETTE)]
+        _picked_color = [default_color]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle('Save Spectrum Trace')
+        dlg.setModal(True)
+        dlg.setFixedSize(400, 190)
+        dlg.setStyleSheet(
+            'QDialog{background:#1a1a1a;}'
+            f'QLabel{{color:{TEXT_HI};font-size:12px;background:transparent;}}'
+            'QLineEdit{background:#e8e8e8;color:#111;border:none;'
+            'border-radius:3px;padding:4px 8px;font-size:12px;}'
+            f'QPushButton#ok_btn{{background:#2a3a2a;color:{TEXT_HI};'
+            'border:1px solid #4a6a4a;border-radius:4px;'
+            'font-size:11px;padding:5px 22px;}}'
+            f'QPushButton#ok_btn:hover{{background:#3a4a3a;border-color:#6a9a6a;}}'
+            f'QPushButton#cancel_btn{{background:#2e2e2e;color:{TEXT_HI};'
+            'border:1px solid #444;border-radius:4px;'
+            'font-size:11px;padding:5px 22px;}}'
+            f'QPushButton#cancel_btn:hover{{background:#3a3a3a;border-color:#666;}}')
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(20, 18, 20, 14)
+        root.setSpacing(10)
+
+        row_name = QHBoxLayout()
+        row_name.addWidget(QLabel('Name:'))
+        edit = QLineEdit(default_name)
+        edit.selectAll()
+        row_name.addWidget(edit, stretch=1)
+        root.addLayout(row_name)
+
+        row_desc = QHBoxLayout()
+        row_desc.addWidget(QLabel('Description:'))
+        edit_desc = QLineEdit()
+        edit_desc.setPlaceholderText('Optional notes…')
+        row_desc.addWidget(edit_desc, stretch=1)
+        root.addLayout(row_desc)
+
+        row_color = QHBoxLayout()
+        row_color.addWidget(QLabel('Color:'))
+        btn_color = QPushButton()
+        btn_color.setFixedSize(34, 24)
+        btn_color.setStyleSheet(
+            f'background:{default_color};border:1px solid #666;border-radius:3px;')
+
+        def _pick_color():
+            from PyQt6.QtWidgets import QColorDialog
+            from PyQt6.QtGui import QColor as _QC
+            c = QColorDialog.getColor(_QC(_picked_color[0]), dlg, 'Trace Color')
+            if c.isValid():
+                _picked_color[0] = c.name()
+                btn_color.setStyleSheet(
+                    f'background:{c.name()};border:1px solid #666;border-radius:3px;')
+
+        btn_color.clicked.connect(_pick_color)
+        row_color.addWidget(btn_color)
+        row_color.addStretch()
+        root.addLayout(row_color)
+
+        root.addStretch()
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_ok     = QPushButton('Save');   btn_ok.setObjectName('ok_btn')
+        btn_cancel = QPushButton('Cancel'); btn_cancel.setObjectName('cancel_btn')
+        btn_ok.clicked.connect(dlg.accept)
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+        root.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        name  = edit.text().strip() or default_name
+        desc  = edit_desc.text().strip()
+        color = _picked_color[0]
+
         self.canvas_spec.store_trace(lev_x.copy(), lev_y.copy(), color)
         idx = len(self._sp_traces)
-        self._sp_traces.append({'lev_x': lev_x.copy(), 'lev_y': lev_y.copy(), 'color': color})
-        row = TraceRow(
-            idx=idx, name=f'Sp {idx + 1}', color=color,
+        self._sp_traces.append({
+            'lev_x': lev_x.copy(), 'lev_y': lev_y.copy(),
+            'color': color, 'name': name, 'desc': desc,
+        })
+        row_w = TraceRow(
+            idx=idx, name=name, color=color,
             on_vis=lambda i, c: self.canvas_spec.set_trace_visible(i, c),
             on_del=self._delete_sp_trace,
         )
-        self._sp_trace_rows_layout.addWidget(row)
-        self.sb.showMessage(f'Traza spectrum Sp {idx + 1} guardada', 2000)
+        row_w.setToolTip(desc)
+        self._sp_trace_rows_layout.addWidget(row_w)
+        self.sb.showMessage(f'✓  Spectrum trace saved: {name}', 3000)
 
     def _delete_sp_trace(self, idx: int):
         """Elimina la traza spectrum en posición idx."""
