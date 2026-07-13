@@ -83,6 +83,9 @@ ENGINE_PALETTE = [
     '#FF453A',   # 6 Rojo     — engine 7  (~620–750 nm)
 ]
 
+# ── Paleta de curvas objetivo ────────────────────────────────────────
+TARGET_PALETTE = ['#FFD60A', '#FF9F0A', '#BF5AF2', '#FF375F', '#00C5E8', '#30D158', '#FF6B6B']
+
 # ── Colormap para espectrograma — estilo thermal / analizador pro ─────
 # negro (silencio) → azul → cyan → verde → amarillo → rojo → blanco (pico)
 _SGRAM_CMAP = LinearSegmentedColormap.from_list(
@@ -434,6 +437,33 @@ def fmt_freq(f_hz):
         v = f_hz / 1000.0
         return f'{v:.0f} kHz' if v == int(v) else f'{v:.1f} kHz'
     return f'{int(f_hz)} Hz' if f_hz == int(f_hz) else f'{f_hz:.0f} Hz'
+
+
+def _load_curve_file(path: str):
+    """
+    Load a two-column freq/dB file.
+    Supports plain text (space/tab/comma separated) and REW format (* comments).
+    Returns np.ndarray shape (N, 2): column 0 = Hz, column 1 = dB.
+    """
+    rows = []
+    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('*') or line.startswith('#'):
+                continue
+            # replace commas with spaces
+            parts = line.replace(',', ' ').split()
+            if len(parts) >= 2:
+                try:
+                    rows.append((float(parts[0]), float(parts[1])))
+                except ValueError:
+                    continue
+    if not rows:
+        raise ValueError('No valid frequency/dB data found in file.')
+    arr = np.array(rows)
+    # sort by frequency
+    arr = arr[arr[:, 0].argsort()]
+    return arr
 
 
 # ── Datos de una traza almacenada ─────────────────────────────────────
@@ -862,6 +892,7 @@ class MeasurementCanvas(FigureCanvas):
         self._trace_ph_lines:  List = []
         self._trace_ir_lines:  List = []
         self._trace_coh_lines: List = []
+        self._target_lines: List = []   # dashed overlay lines on ax_tf
         self._eng_colors = [ENGINE_PALETTE[0], ENGINE_PALETTE[1]]
         self._build()
         self._build_tf_overlay()
@@ -1074,6 +1105,29 @@ class MeasurementCanvas(FigureCanvas):
         self._smooth_btn.raise_()
         self.on_smooth_changed = None   # callable(fraction) — MainWindow lo enlaza
         self._position_tf_overlay()
+
+    def add_target_curve(self, freqs, db, color='#FFD60A', name='Target'):
+        """Add a dashed target curve overlay on the TF magnitude axis."""
+        line, = self.ax_tf.plot(
+            freqs, db, '--', color=color, linewidth=1.4,
+            alpha=0.75, zorder=4, label=name)
+        self._target_lines.append(line)
+        self.draw_idle()
+        return len(self._target_lines) - 1
+
+    def remove_target_curve(self, idx):
+        if 0 <= idx < len(self._target_lines):
+            try:
+                self._target_lines[idx].remove()
+            except Exception:
+                pass
+            self._target_lines.pop(idx)
+            self.draw_idle()
+
+    def set_target_visible(self, idx, visible: bool):
+        if 0 <= idx < len(self._target_lines):
+            self._target_lines[idx].set_visible(visible)
+            self.draw_idle()
 
     def _position_tf_overlay(self):
         """
@@ -2693,8 +2747,10 @@ class MainWindow(QMainWindow):
         self._current_ws_idx: int    = 0          # active workspace index
         self._ws_loading: bool       = False      # True while loading a workspace (suppress _save_prefs)
         self._trace_color_idx = 0           # cicla por TRACE_PALETTE
-        self._mic_cal         = None   # tuple (freqs, dB_correction) o None
+        self._mic_cal         = None   # tuple (freqs, dB_correction) o None — kept for backward compat
         self._mic_cal_name    = ''     # nombre del archivo cargado
+        self._channel_cal: dict = {}   # {ch_number (1-based): {'freqs': np.array, 'db': np.array, 'name': str}}
+        self._target_curves: list = []   # list of dicts: {freqs, db, color, name}
         self._show_ch2        = True   # mostrar 2do canal en gráficas
         self._show_avg        = True   # mostrar promedio
 
@@ -5806,6 +5862,9 @@ class MainWindow(QMainWindow):
             'out': self.engine.dev_out,
         }
 
+        # Snapshot de calibraciones por canal — se actualiza en la UI del Input tab
+        _ch_cal_local = dict(self._channel_cal)
+
         # ── Tabs Input / Output ───────────────────────────────────────
         tab_widget = QTabWidget()
         tab_widget.setStyleSheet(
@@ -5887,6 +5946,83 @@ class MainWindow(QMainWindow):
             lbl_cur.setText(f'Active: {cur_name}')
             pv.addWidget(lbl_cur)
 
+            if mode == 'in':
+                sep_ch = QFrame(); sep_ch.setFrameShape(QFrame.Shape.HLine)
+                sep_ch.setStyleSheet('color:#2a2a2a;'); pv.addWidget(sep_ch)
+
+                lbl_ch = QLabel('Channel Setup — Mic Correction Curves')
+                lbl_ch.setStyleSheet(
+                    f'color:{ACCENT};font-size:9px;letter-spacing:1px;font-weight:bold;'
+                    f'background:transparent;padding:2px 0;')
+                pv.addWidget(lbl_ch)
+
+                # Determine max channels for selected device
+                sel_dev = next((d for d in devs if d['id'] == _sel['in']), None)
+                n_ch = min(sel_dev['in'], 16) if sel_dev else 8
+
+                ch_tbl = QTableWidget(n_ch, 3)
+                ch_tbl.setStyleSheet(_tbl_ss)
+                ch_tbl.setHorizontalHeaderLabels(['Ch', 'Channel Name', 'Mic Correction Curve'])
+                ch_tbl.horizontalHeader().setSectionResizeMode(0, ch_tbl.horizontalHeader().ResizeMode.Fixed)
+                ch_tbl.horizontalHeader().setSectionResizeMode(1, ch_tbl.horizontalHeader().ResizeMode.Stretch)
+                ch_tbl.horizontalHeader().setSectionResizeMode(2, ch_tbl.horizontalHeader().ResizeMode.Fixed)
+                ch_tbl.setColumnWidth(0, 38)
+                ch_tbl.setColumnWidth(2, 200)
+                ch_tbl.setSelectionMode(ch_tbl.SelectionMode.NoSelection)
+                ch_tbl.setEditTriggers(ch_tbl.EditTrigger.NoEditTriggers)
+                ch_tbl.verticalHeader().setVisible(False)
+                ch_tbl.setFixedHeight(min(n_ch * 28 + 28, 200))
+
+                def _build_ch_table(n):
+                    ch_tbl.setRowCount(n)
+                    for ci in range(n):
+                        ch_num = ci + 1
+                        ch_tbl.setItem(ci, 0, QTableWidgetItem(str(ch_num)))
+                        ch_tbl.setItem(ci, 1, QTableWidgetItem(f'Input {ch_num}'))
+
+                        cal = _ch_cal_local.get(ch_num)
+                        btn_label = f'✓ {cal["name"]}' if cal else 'None  ＋'
+                        btn_cal_ch = QPushButton(btn_label)
+                        btn_cal_ch.setStyleSheet(
+                            f'QPushButton{{font-size:9px;padding:1px 6px;border:none;'
+                            f'color:{"#4aaa4a" if cal else TEXT_MID};background:transparent;text-align:left;}}'
+                            f'QPushButton:hover{{color:{TEXT_HI};}}')
+
+                        def _make_cal_handler(ch=ch_num, btn=btn_cal_ch):
+                            def _handler():
+                                if _ch_cal_local.get(ch):
+                                    _ch_cal_local.pop(ch, None)
+                                    btn.setText('None  ＋')
+                                    btn.setStyleSheet(
+                                        f'QPushButton{{font-size:9px;padding:1px 6px;border:none;'
+                                        f'color:{TEXT_MID};background:transparent;text-align:left;}}'
+                                        f'QPushButton:hover{{color:{TEXT_HI};}}')
+                                    return
+                                path, _ = QFileDialog.getOpenFileName(
+                                    dlg, f'Load Mic Correction — Ch {ch}',
+                                    os.path.expanduser('~'),
+                                    'Calibration files (*.txt *.csv);;All files (*)')
+                                if not path:
+                                    return
+                                try:
+                                    data = _load_curve_file(path)
+                                    name = os.path.basename(path)
+                                    _ch_cal_local[ch] = {'freqs': data[:, 0], 'db': data[:, 1], 'name': name}
+                                    btn.setText(f'✓ {name}')
+                                    btn.setStyleSheet(
+                                        f'QPushButton{{font-size:9px;padding:1px 6px;border:none;'
+                                        f'color:#4aaa4a;background:transparent;text-align:left;}}'
+                                        f'QPushButton:hover{{color:#ff6666;}}')
+                                except Exception as e:
+                                    QMessageBox.critical(dlg, 'Error', str(e))
+                            return _handler
+
+                        btn_cal_ch.clicked.connect(_make_cal_handler())
+                        ch_tbl.setCellWidget(ci, 2, btn_cal_ch)
+
+                _build_ch_table(n_ch)
+                pv.addWidget(ch_tbl)
+
             return panel
 
         tab_widget.addTab(_make_panel('in'),  'Input')
@@ -5940,6 +6076,9 @@ class MainWindow(QMainWindow):
                 eng.btn_play.setChecked(False)
                 eng.btn_play.setText('▶')
             self._set_stopped()
+
+            # Apply per-channel calibrations from dialog
+            self._channel_cal.update(_ch_cal_local)
 
             self._save_prefs()
             self.sb.showMessage(
@@ -6833,9 +6972,10 @@ class MainWindow(QMainWindow):
         # Aplicar offset y calibración solo si engine0 activo y tiene datos
         if _eng0_active and freqs is not None:
             mag_db = mag_db + self._tf_engines[0]._gain_offset_db
-            if self._mic_cal is not None:
-                cal_f, cal_db = self._mic_cal
-                mag_db = mag_db - np.interp(freqs, cal_f, cal_db, left=0.0, right=0.0)
+            _ch0 = self._tf_engines[0].spn_m.value() if hasattr(self._tf_engines[0], 'spn_m') else 1
+            _cal0 = self._channel_cal.get(_ch0)
+            if _cal0 is not None:
+                mag_db = mag_db - np.interp(freqs, _cal0['freqs'], _cal0['db'], left=0.0, right=0.0)
 
         # Engine 1 → CH2 line
         freqs2 = mag_db2 = phase_deg2 = gamma2_2 = None
@@ -6858,8 +6998,10 @@ class MainWindow(QMainWindow):
                         smooth_fraction=smooth_frac, delay_comp_s=delay1/1000.0)
             if mag_db2 is not None:
                 mag_db2 = mag_db2 + self._tf_engines[1]._gain_offset_db
-            if mag_db2 is not None and self._mic_cal is not None:
-                mag_db2 = mag_db2 - np.interp(freqs2, cal_f, cal_db, left=0.0, right=0.0)
+            _ch1 = self._tf_engines[1].spn_m.value() if len(self._tf_engines) > 1 and hasattr(self._tf_engines[1], 'spn_m') else 2
+            _cal1 = self._channel_cal.get(_ch1)
+            if mag_db2 is not None and _cal1 is not None:
+                mag_db2 = mag_db2 - np.interp(freqs2, _cal1['freqs'], _cal1['db'], left=0.0, right=0.0)
 
         # ── Promedio de TODOS los engines activos (N engines) ────────────
         # Solo incluir engines que estén activos Y con datos
@@ -6894,8 +7036,10 @@ class MainWindow(QMainWindow):
                         smooth_fraction=smooth_frac)
                     _gain_ei = self._tf_engines[_ei]._gain_offset_db
                     _mei = _mei + _gain_ei
-                    if self._mic_cal is not None and freqs is not None:
-                        _mei = _mei - np.interp(freqs, cal_f, cal_db, left=0.0, right=0.0)
+                    _ch_ei = self._tf_engines[_ei].spn_m.value() if hasattr(self._tf_engines[_ei], 'spn_m') else (_ei + 1)
+                    _cal_ei = self._channel_cal.get(_ch_ei)
+                    if _cal_ei is not None:
+                        _mei = _mei - np.interp(_freqs_ei, _cal_ei['freqs'], _cal_ei['db'], left=0.0, right=0.0)
                     _all_lin.append(10.0 ** (_mei / 20.0))
                     _all_ph.append(_phei)
                     _all_g2.append(_g2ei)
@@ -7137,31 +7281,13 @@ class MainWindow(QMainWindow):
     # ── Calibración de micrófono ──────────────────────────────────────
 
     def _load_mic_cal(self):
-        """Carga archivo .txt con columnas freq_hz / correction_dB."""
-        path, _ = QFileDialog.getOpenFileName(
-            self, 'Cargar calibración de micrófono',
-            os.path.expanduser('~'),
-            'Text files (*.txt);;CSV (*.csv);;All files (*)'
-        )
-        if not path:
-            return
-        try:
-            data = np.loadtxt(path, comments='#')
-            if data.ndim != 2 or data.shape[1] < 2:
-                raise ValueError('El archivo debe tener 2 columnas: freq_hz  correction_dB')
-            self._mic_cal      = (data[:, 0], data[:, 1])
-            self._mic_cal_name = os.path.basename(path)
-            self.sb.showMessage(
-                f'✓  Mic cal cargada: {self._mic_cal_name}  '
-                f'({len(data)} puntos, '
-                f'{data[0,0]:.0f}–{data[-1,0]:.0f} Hz)', 6000)
-        except Exception as e:
-            QMessageBox.critical(self, 'Error al cargar calibración', str(e))
+        """Open I-O Config so user can load per-channel mic correction."""
+        self._show_io_config()
 
     def _clear_mic_cal(self):
-        self._mic_cal      = None
-        self._mic_cal_name = ''
-        self.sb.showMessage('Microphone calibration cleared', 3000)
+        """Clear all channel mic corrections."""
+        self._channel_cal.clear()
+        self.sb.showMessage('All mic calibrations cleared', 3000)
 
     # ── Measurement Config ────────────────────────────────────────────
 
@@ -8350,33 +8476,98 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _show_target_curves_dialog(self):
-        """Target Curves — gestión de curvas objetivo."""
-        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
-                                     QListWidget, QPushButton, QDialogButtonBox,
-                                     QLabel)
+        """Target Curves — import and manage dashed overlay curves on the Magnitude graph."""
+        from PyQt6.QtWidgets import QListWidget, QListWidgetItem
+        from PyQt6.QtGui import QColor
         dlg = QDialog(self)
         dlg.setWindowTitle('Target Curves')
-        dlg.setMinimumSize(380, 280)
+        dlg.resize(460, 340)
         dlg.setStyleSheet(
             f'QDialog{{background:{BG_APP};color:{TEXT_HI};font-size:11px;}}'
-            f'QLabel{{color:{TEXT_MID};}}'
-            f'QListWidget{{background:#1a1a1a;color:{TEXT_HI};border:1px solid #333;'
-            f'border-radius:3px;}}'
-            f'QPushButton{{background:#252525;color:{TEXT_HI};padding:4px 10px;'
-            f'border:1px solid #444;border-radius:3px;}}'
+            f'QLabel{{color:{TEXT_MID};background:transparent;}}'
+            f'QListWidget{{background:#1a1a1a;color:{TEXT_HI};border:1px solid #333;border-radius:3px;}}'
+            f'QPushButton{{background:#252525;color:{TEXT_HI};padding:4px 14px;'
+            f'border:1px solid #444;border-radius:3px;min-width:72px;}}'
             f'QPushButton:hover{{background:#333;}}')
         lay = QVBoxLayout(dlg)
-        lay.addWidget(QLabel('Target Curves — importar curvas de referencia (.txt, .csv):'))
-        lst = QListWidget()
-        lst.addItem('(No target curves loaded)')
-        lay.addWidget(lst)
-        row = QHBoxLayout()
-        btn_load = QPushButton('Load…')
-        btn_del  = QPushButton('Remove')
-        btn_load.clicked.connect(lambda: self.sb.showMessage(
-            'Target Curves: próximamente', 3000))
-        row.addWidget(btn_load); row.addWidget(btn_del); row.addStretch()
-        lay.addLayout(row)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(8)
+
+        hdr = QLabel('TARGET  CURVES')
+        hdr.setStyleSheet(
+            f'color:{ACCENT};font-size:9px;letter-spacing:2px;font-weight:bold;'
+            f'background:transparent;padding:2px 0;')
+        lay.addWidget(hdr)
+
+        info = QLabel('Import .txt / .csv files (Hz  dB columns). REW format supported.')
+        info.setStyleSheet(f'color:{TEXT_MID};font-size:9px;background:transparent;')
+        lay.addWidget(info)
+
+        # Curve list widget
+        list_w = QListWidget()
+        list_w.setSpacing(2)
+        lay.addWidget(list_w, stretch=1)
+
+        def _refresh_list():
+            list_w.clear()
+            for tc in self._target_curves:
+                item = QListWidgetItem(
+                    f'  {tc["name"]}   ({tc["freqs"][0]:.0f}–{tc["freqs"][-1]:.0f} Hz)')
+                item.setForeground(QColor(tc['color']))
+                list_w.addItem(item)
+
+        _refresh_list()
+
+        # Buttons row
+        btn_row = QHBoxLayout()
+        btn_import = QPushButton('📂  Import…')
+        btn_remove = QPushButton('Remove')
+        btn_clear  = QPushButton('Clear All')
+        btn_row.addWidget(btn_import)
+        btn_row.addWidget(btn_remove)
+        btn_row.addWidget(btn_clear)
+        btn_row.addStretch()
+        lay.addLayout(btn_row)
+
+        def _do_import():
+            path, _ = QFileDialog.getOpenFileName(
+                dlg, 'Import Target Curve', os.path.expanduser('~'),
+                'Curve files (*.txt *.csv);;All files (*)')
+            if not path:
+                return
+            try:
+                data = _load_curve_file(path)
+            except Exception as e:
+                QMessageBox.critical(dlg, 'Error loading curve', str(e))
+                return
+            color = TARGET_PALETTE[len(self._target_curves) % len(TARGET_PALETTE)]
+            name  = os.path.splitext(os.path.basename(path))[0]
+            self.canvas_meas.add_target_curve(data[:, 0], data[:, 1], color, name)
+            self._target_curves.append({'freqs': data[:, 0], 'db': data[:, 1],
+                                         'color': color, 'name': name})
+            _refresh_list()
+            self.sb.showMessage(
+                f'✓  Target: {name}  ({len(data)} pts, {data[0,0]:.0f}–{data[-1,0]:.0f} Hz)', 5000)
+
+        def _do_remove():
+            idx = list_w.currentRow()
+            if idx < 0:
+                return
+            self.canvas_meas.remove_target_curve(idx)
+            if idx < len(self._target_curves):
+                self._target_curves.pop(idx)
+            _refresh_list()
+
+        def _do_clear():
+            for i in range(len(self._target_curves) - 1, -1, -1):
+                self.canvas_meas.remove_target_curve(i)
+            self._target_curves.clear()
+            _refresh_list()
+
+        btn_import.clicked.connect(_do_import)
+        btn_remove.clicked.connect(_do_remove)
+        btn_clear.clicked.connect(_do_clear)
+
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         bb.rejected.connect(dlg.accept)
         lay.addWidget(bb)

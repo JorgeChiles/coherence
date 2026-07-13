@@ -14,16 +14,16 @@ rm -rf build/ dist/ __pycache__/
 echo "▶ Construyendo Coherence.app..."
 pyinstaller Coherence.spec --noconfirm
 
-echo "▶ Comprimiendo..."
-cd dist/
-zip -r --symlinks ../Coherence-macOS.zip Coherence.app
-cd ..
+echo "▶ Comprimiendo con ditto (preserva symlinks, ~62 MB)..."
+rm -f Coherence-macOS.zip
+ditto -c -k --sequesterRsrc --keepParent dist/Coherence.app Coherence-macOS.zip
 
 echo ""
 echo "✅ Listo: Coherence-macOS.zip (~$(du -sh Coherence-macOS.zip | cut -f1))"
 echo ""
 echo "Siguiente paso:"
-echo "  1. Ve a https://github.com/JorgeChiles/coherence/releases/new"
-echo "  2. Tag: v0.1.0"
-echo "  3. Sube Coherence-macOS.zip"
-echo "  4. Publica el release"
+echo "  1. Descarga el .zip de Windows desde AppVeyor"
+echo "  2. Ve a https://github.com/JorgeChiles/coherence/releases/new"
+echo "  3. Crea tag v0.2.0 (o el número que corresponda)"
+echo "  4. Sube Coherence-macOS.zip y Coherence-Windows.zip"
+echo "  5. Publica el release"

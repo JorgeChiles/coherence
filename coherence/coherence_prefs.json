@@ -17,11 +17,6 @@
       "tf_engines": [],
       "sp_engines": [
         {
-          "ch": 1,
-          "color": "#3cf53c",
-          "name": "1mic"
-        },
-        {
           "ch": 4,
           "color": "#4fc3f7",
           "name": "Analog"
