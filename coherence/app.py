@@ -927,10 +927,10 @@ class MeasurementCanvas(FigureCanvas):
         self.ax_ir.xaxis.set_major_locator(ticker.MultipleLocator(50))
         self.ax_ir.xaxis.set_minor_locator(ticker.MultipleLocator(25))
         self.ax_ir.tick_params(axis='x', which='both',
-                               top=True, labeltop=True,
-                               bottom=True, labelbottom=False,
+                               top=False, labeltop=False,
+                               bottom=True, labelbottom=True,
                                labelsize=7, colors=TEXT_MID)
-        self.ax_ir.xaxis.set_label_position('top')
+        self.ax_ir.xaxis.set_label_position('bottom')
         self.ax_ir.set_xlabel('ms', fontsize=7, color=TEXT_MID, labelpad=2)
 
         self.line_ir, = self.ax_ir.plot([], [], color=self._eng_colors[0], lw=0.9, alpha=0.90)
@@ -984,10 +984,9 @@ class MeasurementCanvas(FigureCanvas):
         _l1, = self.ax_tf.semilogx([], [],     color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-', label='TF2')
         self._lines_tf    = [_l0, _l1]
         self.line_tf_avg, = self.ax_tf.semilogx([], [],     color='#ffffff', lw=1.8, alpha=0.85, ls='--', label='AVG')
-        # Coherencia: fill blanco semitransparente (estilo SMAART)
-        self.line_coh,    = self.ax_coh.semilogx(f0, [0, 0], color=COH_COLOR, lw=0.8, alpha=0.5)
-        self._coh_fill = self.ax_coh.fill_between(f0, [0, 0],
-                                                   color='#d0d8d0', alpha=0.09)
+        # Coherencia: solo el trazo rojo, sin área de relleno
+        self.line_coh,    = self.ax_coh.semilogx(f0, [0, 0], color=COH_COLOR, lw=1.2, alpha=0.85)
+        self._coh_fill    = None   # no fill
 
         # ── Phase ──  (fase envuelta −180…+180, estilo SMAART)
         self.ax_ph = self.fig.add_subplot(gs[2])
@@ -1059,6 +1058,8 @@ class MeasurementCanvas(FigureCanvas):
             new_tf_h = p['tf'][3] + (p['tf'][1] - p['ph'][1])
             self.ax_tf.set_position( [p['tf'][0], new_tf_y, p['tf'][2], new_tf_h])
             self.ax_coh.set_position([p['tf'][0], new_tf_y, p['tf'][2], new_tf_h])
+            if hasattr(self, '_smooth_btn'):
+                self._smooth_btn.setVisible(True)
 
         elif mode == 'phase_only':
             for ax in (self.ax_ir, self.ax_tf, self.ax_coh):
@@ -1069,6 +1070,8 @@ class MeasurementCanvas(FigureCanvas):
             # Forzar visibilidad de trazas guardadas en Phase
             for ln in self._trace_ph_lines:
                 ln.set_visible(True)
+            if hasattr(self, '_smooth_btn'):
+                self._smooth_btn.setVisible(False)
 
         else:  # 'full'
             for ax in (self.ax_ir, self.ax_tf, self.ax_coh, self.ax_ph):
@@ -1078,6 +1081,8 @@ class MeasurementCanvas(FigureCanvas):
             self.ax_tf.set_position(p['tf'])
             self.ax_coh.set_position(p['coh'])
             self.ax_ph.set_position(p['ph'])
+            if hasattr(self, '_smooth_btn'):
+                self._smooth_btn.setVisible(True)
 
         self.draw_idle()
         # Reubicar el botón de resolución al nuevo fondo del eje TF
@@ -1326,10 +1331,7 @@ class MeasurementCanvas(FigureCanvas):
 
         # Coherencia — γ² o γ según flag
         coh_display = gamma2[mask] if coh_squared else np.sqrt(np.clip(gamma2[mask], 0.0, 1.0))
-        self._coh_fill.remove()
-        self._coh_fill = self.ax_coh.fill_between(
-            f, coh_display, color=COH_COLOR, alpha=0.10
-        )
+        # no fill — solo actualizar la línea
         self.ax_coh.axhline(0.9 if coh_squared else 0.949, color=COH_COLOR,
                             lw=0.7, ls=':', alpha=0.4)
         self.line_coh.set_data(f, coh_display)
@@ -5598,26 +5600,67 @@ class MainWindow(QMainWindow):
             self.lbl_spl_max.setText('Max  0.0')
 
     def _show_spl_settings(self):
+        from PyQt6.QtCore import QTimer as _QT
+        import numpy as _np_spl
+        import sounddevice as _sd_spl
+
         dlg = QDialog(self)
         dlg.setWindowTitle('SPL Meter Settings')
-        dlg.setFixedSize(280, 260)
+        dlg.setFixedSize(320, 360)
         dlg.setStyleSheet(self.styleSheet())
         lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+
         form = QFormLayout(); form.setSpacing(8)
 
+        # ── Channel selector ──────────────────────────────────────────
+        cmb_ch = QComboBox()
+        all_devs = getattr(self, '_cached_all_devices', None) or []
+        sel_dev  = next((d for d in all_devs if d['id'] == self.engine.dev_in), None)
+        n_ch_spl = int(sel_dev['in']) if sel_dev else 8
+        for i in range(1, n_ch_spl + 1):
+            cmb_ch.addItem(f'Input {i}', i)
+        cur_ch = getattr(self.engine, 'ch_spl', 1)
+        cmb_ch.setCurrentIndex(max(0, cur_ch - 1))
+        form.addRow('SPL Channel:', cmb_ch)
+
+        # ── Live level bar ────────────────────────────────────────────
+        _pb_ss = (
+            'QProgressBar{background:#0a0a0a;border:1px solid #222;border-radius:3px;}'
+            'QProgressBar::chunk{background:qlineargradient('
+            'x1:0,y1:0,x2:1,y2:0,'
+            'stop:0 #1a6a1a,stop:0.6 #2aaa2a,stop:0.85 #aaaa00,stop:1 #aa2222);'
+            'border-radius:2px;}')
+        pb_level = QProgressBar()
+        pb_level.setRange(0, 100)
+        pb_level.setValue(0)
+        pb_level.setTextVisible(False)
+        pb_level.setFixedHeight(18)
+        pb_level.setStyleSheet(_pb_ss)
+
+        lbl_db = QLabel('— dBFS')
+        lbl_db.setStyleSheet(f'color:{TEXT_MID};font-size:10px;background:transparent;')
+
+        lvl_row = QHBoxLayout()
+        lvl_row.addWidget(pb_level, stretch=1)
+        lvl_row.addWidget(lbl_db)
+        form.addRow('Level:', lvl_row)
+
+        # ── Calibrate ─────────────────────────────────────────────────
+        btn_cal = QPushButton('Calibrate 94 dB SPL…')
+        btn_cal.setMinimumHeight(28)
+        btn_cal.clicked.connect(self._show_spl_calibration_dialog)
+        form.addRow('', btn_cal)
+
+        # ── Cal offset (manual) ───────────────────────────────────────
         spn_offset = QDoubleSpinBox()
         spn_offset.setRange(-60.0, 60.0); spn_offset.setSingleStep(0.5)
         spn_offset.setDecimals(1); spn_offset.setSuffix(' dB')
         spn_offset.setValue(self._spl_offset_db)
-        form.addRow('Cal. Offset (dBFS→SPL):', spn_offset)
+        form.addRow('Cal. Offset:', spn_offset)
 
-        btn_spl_cal = QPushButton('Calibrate 94 dB…')
-        btn_spl_cal.setToolTip(
-            'Place a 94 dBSPL source at 1 kHz next to the mic, then click to calibrate.')
-        btn_spl_cal.setMinimumHeight(26)
-        btn_spl_cal.clicked.connect(self._show_spl_calibration_dialog)
-        form.addRow('', btn_spl_cal)
-
+        # ── Thresholds ────────────────────────────────────────────────
         spn_warn = QDoubleSpinBox()
         spn_warn.setRange(0.0, 160.0); spn_warn.setSingleStep(1.0)
         spn_warn.setDecimals(1); spn_warn.setSuffix(' dB')
@@ -5632,6 +5675,7 @@ class MainWindow(QMainWindow):
 
         lay.addLayout(form)
         lay.addStretch()
+
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel)
@@ -5639,10 +5683,70 @@ class MainWindow(QMainWindow):
         btns.rejected.connect(dlg.reject)
         lay.addWidget(btns)
 
+        # ── Live level stream ─────────────────────────────────────────
+        _meter_buf2 = [None]
+        _sd_stream2 = [None]
+
+        def _start_spl_stream(ch_idx):
+            if _sd_stream2[0] is not None:
+                try: _sd_stream2[0].stop(); _sd_stream2[0].close()
+                except Exception: pass
+            dev_id = self.engine.dev_in
+            try:
+                info = _sd_spl.query_devices(dev_id, 'input')
+                n_phys = int(info['max_input_channels'])
+                n_read = min(ch_idx + 1, n_phys)
+                def _cb(indata, frames, t, s):
+                    if indata.shape[1] > ch_idx:
+                        _meter_buf2[0] = indata[:, ch_idx].copy()
+                st = _sd_spl.InputStream(
+                    device=dev_id, channels=n_read,
+                    samplerate=int(info['default_samplerate']),
+                    blocksize=512, callback=_cb, dtype='float32')
+                st.start()
+                _sd_stream2[0] = st
+            except Exception:
+                pass
+
+        _start_spl_stream(cmb_ch.currentIndex())
+
+        def _ch_changed(idx):
+            _start_spl_stream(idx)
+
+        cmb_ch.currentIndexChanged.connect(_ch_changed)
+
+        _mt2 = _QT(dlg)
+        _mt2.setInterval(80)
+
+        def _upd():
+            buf = _meter_buf2[0]
+            if buf is None:
+                return
+            rms = float(_np_spl.sqrt(_np_spl.mean(buf.astype(float) ** 2)))
+            db  = 20.0 * _np_spl.log10(max(rms, 1e-10))
+            pct = int(max(0.0, min(100.0, (db + 60.0) * 100.0 / 60.0)))
+            pb_level.setValue(pct)
+            lbl_db.setText(f'{db:.1f} dBFS')
+
+        _mt2.timeout.connect(_upd)
+        _mt2.start()
+
+        def _cleanup2():
+            _mt2.stop()
+            if _sd_stream2[0] is not None:
+                try: _sd_stream2[0].stop(); _sd_stream2[0].close()
+                except Exception: pass
+
+        dlg.finished.connect(_cleanup2)
+
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            new_ch = cmb_ch.currentData()
+            if new_ch is not None:
+                self.engine.ch_spl = int(new_ch)
             self._spl_offset_db = spn_offset.value()
             self._spl_warn_db   = spn_warn.value()
             self._spl_clip_db   = spn_clip.value()
+            self._save_prefs()
 
     def _show_spl_calibration_dialog(self):
         """
@@ -6173,31 +6277,66 @@ class MainWindow(QMainWindow):
                 _build_ch_table(n_ch)
                 pv.addWidget(ch_tbl)
 
-                # ── Live level meter timer ─────────────────────────────
+                # ── Live level meter: real sounddevice stream ──────────
                 import numpy as _np_io
+                import sounddevice as _sd_io
+
+                _meter_buf  = [None]   # shared mutable container
+                _meter_n_ch = [n_ch]
+
+                def _audio_cb(indata, frames, time_info, status):
+                    _meter_buf[0] = indata.copy()
+
+                _sd_stream = [None]
+
+                def _start_meter_stream():
+                    dev_id = _sel.get('in', self.engine.dev_in)
+                    try:
+                        info  = _sd_io.query_devices(dev_id, 'input')
+                        n_phys = int(info['max_input_channels'])
+                        _meter_n_ch[0] = min(n_ch, n_phys)
+                        st = _sd_io.InputStream(
+                            device=dev_id,
+                            channels=_meter_n_ch[0],
+                            samplerate=int(info['default_samplerate']),
+                            blocksize=512,
+                            callback=_audio_cb,
+                            dtype='float32')
+                        st.start()
+                        _sd_stream[0] = st
+                    except Exception:
+                        pass
+
+                _start_meter_stream()
+
                 _meter_timer = QTimer(dlg)
-                _meter_timer.setInterval(80)   # ~12 fps
+                _meter_timer.setInterval(80)
 
                 def _update_meters():
-                    if not self.engine.running:
+                    buf = _meter_buf[0]
+                    if buf is None:
                         return
                     for ci, pb in enumerate(_level_bars):
-                        try:
-                            buf = self.engine.get_buffer_meas(ci)
-                            if buf is not None and len(buf) > 0:
-                                rms = float(_np_io.sqrt(_np_io.mean(buf.astype(float) ** 2)))
-                                db  = 20.0 * _np_io.log10(max(rms, 1e-10))
-                                # Map -60 dBFS..0 dBFS → 0..100
-                                pct = int(max(0.0, min(100.0, (db + 60.0) * 100.0 / 60.0)))
-                                pb.setValue(pct)
-                            else:
-                                pb.setValue(0)
-                        except Exception:
+                        if ci < buf.shape[1]:
+                            rms = float(_np_io.sqrt(_np_io.mean(buf[:, ci].astype(float) ** 2)))
+                            db  = 20.0 * _np_io.log10(max(rms, 1e-10))
+                            pct = int(max(0.0, min(100.0, (db + 60.0) * 100.0 / 60.0)))
+                            pb.setValue(pct)
+                        else:
                             pb.setValue(0)
+
+                def _cleanup():
+                    _meter_timer.stop()
+                    if _sd_stream[0] is not None:
+                        try:
+                            _sd_stream[0].stop()
+                            _sd_stream[0].close()
+                        except Exception:
+                            pass
 
                 _meter_timer.timeout.connect(_update_meters)
                 _meter_timer.start()
-                dlg.finished.connect(_meter_timer.stop)
+                dlg.finished.connect(_cleanup)
 
             return panel
 
@@ -7527,7 +7666,7 @@ class MainWindow(QMainWindow):
         """C — muestra/oculta la curva de coherencia en TF."""
         if hasattr(self, 'canvas_meas'):
             self.canvas_meas.line_coh.set_visible(checked)
-            if hasattr(self.canvas_meas, '_coh_fill'):
+            if hasattr(self.canvas_meas, '_coh_fill') and self.canvas_meas._coh_fill is not None:
                 self.canvas_meas._coh_fill.set_visible(checked)
             self.canvas_meas.draw_idle()
         self.sb.showMessage(f'Coherence {"ON" if checked else "OFF"}', 2000)
@@ -9242,7 +9381,7 @@ class MainWindow(QMainWindow):
         self.canvas_spec.store_trace(tr.lev_x, tr.lev_y, tr.color, tr.lev_freqs)
 
         self._rebuild_trace_panel()
-        self.sb.showMessage(f'Traza {name} guardada', 3000)
+        self.sb.showMessage(f'✓  Trace saved: {name}  (Magnitude + Phase + IR)', 3000)
 
     def _delete_trace(self, idx):
         """Elimina la traza idx de canvas y lista."""
