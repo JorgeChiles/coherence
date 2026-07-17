@@ -257,6 +257,7 @@ class AudioEngine:
 
         self._stream  = None
         self._running = False
+        self.has_output = True   # False when running input-only (generator disabled)
 
     # ── Compatibilidad hacia atrás — spectrum ─────────────────────────
 
@@ -549,9 +550,28 @@ class AudioEngine:
         all_ch = self._ch_meas_list + self._ch_spec_list + [self.ch_ref, self.ch_spl]
         n_in   = min(max(all_ch), max_in)
 
-        # Si el dispositivo de salida no tiene canales (ej. micrófono built-in)
-        # → abrir stream solo-captura, sin generador de señal
+        # ── Si dev_out reporta 0 canales, intentar fallback al default del sistema ──
+        # (Pasa cuando macOS cambia el dispositivo por defecto, o tras plug/unplug
+        #  de hardware — el ID guardado sigue siendo válido pero ya no tiene outputs.)
         if max_out < 1:
+            try:
+                _sys_out = int(sd.default.device[1])
+                if _sys_out != self.dev_out and _sys_out >= 0:
+                    _info_sys = sd.query_devices(_sys_out)
+                    _max_sys  = int(_info_sys['max_output_channels'])
+                    if _max_sys > 0:
+                        self.dev_out = _sys_out
+                        info_out     = _info_sys
+                        max_out      = _max_sys
+                        print(f'[AudioEngine] dev_out fallback → '
+                              f'"{_info_sys["name"]}" (id {_sys_out})')
+            except Exception:
+                pass
+
+        # ── Abrir stream ──────────────────────────────────────────────
+        if max_out < 1:
+            # Genuinamente sin salida — solo-captura (generador inactivo)
+            self.has_output = False
             fs_use = self._negotiate_fs(n_in, n_out=0)
             self.fs = fs_use
             self._stream = sd.InputStream(
@@ -563,7 +583,10 @@ class AudioEngine:
                 callback   = self._callback_input_only,
                 latency    = _LATENCY,
             )
+            print('[AudioEngine] ⚠  Input-only mode — signal generator disabled '
+                  f'(dev_out={self.dev_out} has 0 output channels).')
         else:
+            self.has_output = True
             n_out  = min(2, max_out)
             fs_use = self._negotiate_fs(n_in, n_out)
             self.fs = fs_use

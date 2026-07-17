@@ -441,29 +441,87 @@ def fmt_freq(f_hz):
 
 def _load_curve_file(path: str):
     """
-    Load a two-column freq/dB file.
-    Supports plain text (space/tab/comma separated) and REW format (* comments).
-    Returns np.ndarray shape (N, 2): column 0 = Hz, column 1 = dB.
+    Load a frequency / dB curve file.
+
+    Supported formats
+    -----------------
+    • SMAART .crv   — tab-separated, lines starting with '*' are comments;
+                      '* Curve Name:' / '* Name:' metadata extracted automatically.
+    • REW  .txt     — header block then "Frequency Hz  Level dB  Phase degrees" data.
+    • Generic .txt / .csv / .tsv  — space, tab, comma or semicolon separated.
+    • 3-column files  (freq, dB, phase)  — only first two columns used.
+    • kHz units     — values like "1.0k", "1kHz", "1.5K" auto-converted to Hz.
+    • "dB" suffix   — stripped from amplitude column if present.
+
+    Returns
+    -------
+    curve_name : str | None   — extracted from file metadata (or None)
+    arr        : np.ndarray   — shape (N, 2), col 0 = Hz, col 1 = dB, sorted by Hz
     """
+    import re as _re
+
+    curve_name: str | None = None
     rows = []
-    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('*') or line.startswith('#'):
+
+    with open(path, 'r', encoding='utf-8', errors='ignore') as _f:
+        for raw in _f:
+            line = raw.strip()
+            if not line:
                 continue
-            # replace commas with spaces
-            parts = line.replace(',', ' ').split()
-            if len(parts) >= 2:
-                try:
-                    rows.append((float(parts[0]), float(parts[1])))
-                except ValueError:
-                    continue
+
+            # ── Comment / metadata lines ──────────────────────────────
+            if line.startswith('*') or line.startswith('#') or line.startswith('//'):
+                # Try to extract curve name from SMAART .crv metadata
+                # e.g.  "* Curve Name: My Target"  or  "* Name: ..."
+                m = _re.search(r'(?i)(?:curve\s+)?name\s*[:\s]\s*(.+)', line[1:])
+                if m and curve_name is None:
+                    candidate = m.group(1).strip().strip('*').strip()
+                    if candidate and len(candidate) < 80:
+                        curve_name = candidate
+                continue
+
+            # ── Normalize delimiters ──────────────────────────────────
+            # Replace comma / semicolon / tab with single space
+            norm = line.replace(',', ' ').replace(';', ' ').replace('\t', ' ')
+            parts = norm.split()
+
+            if len(parts) < 2:
+                continue
+
+            # ── Parse frequency (col 0) ───────────────────────────────
+            try:
+                f_raw = parts[0].upper()
+                if f_raw.endswith('KHZ'):
+                    freq = float(f_raw[:-3]) * 1000.0
+                elif f_raw.endswith('K'):
+                    freq = float(f_raw[:-1]) * 1000.0
+                elif f_raw.endswith('HZ'):
+                    freq = float(f_raw[:-2])
+                else:
+                    freq = float(f_raw)
+            except ValueError:
+                continue   # header / label row — skip silently
+
+            if freq <= 0:
+                continue
+
+            # ── Parse amplitude (col 1) ───────────────────────────────
+            try:
+                db_raw = parts[1].upper().replace('DB', '').strip()
+                db = float(db_raw)
+            except ValueError:
+                continue
+
+            rows.append((freq, db))
+
     if not rows:
-        raise ValueError('No valid frequency/dB data found in file.')
-    arr = np.array(rows)
-    # sort by frequency
+        raise ValueError(
+            'No valid frequency / dB data found.\n'
+            'Expected two columns: Hz  dB  (space, tab or comma separated).')
+
+    arr = np.array(rows, dtype=float)
     arr = arr[arr[:, 0].argsort()]
-    return arr
+    return curve_name, arr
 
 
 # ── Datos de una traza almacenada ─────────────────────────────────────
@@ -485,6 +543,66 @@ class TraceData:
         self.lev_x         = lev_x     # niveles REF (CPB o FFT raw)
         self.lev_y         = lev_y     # niveles MED (CPB o FFT raw)
         self.lev_freqs     = lev_freqs  # eje de frecuencias de lev_x/lev_y
+
+
+# ── Target curve overlay (SMAART-style) ───────────────────────────────
+
+class TargetCurve:
+    """Overlay curve drawn on magnitude / spectrum axes."""
+    def __init__(self, name, freqs, mag_db, color='#FFD60A',
+                 visible=False, line_width=2, offset_db=0.0,
+                 tolerance=False, tolerance_db=0.0, builtin=False):
+        self.name         = name
+        self.freqs        = freqs        # Hz array
+        self.mag_db       = mag_db       # dB array (base, without offset)
+        self.color        = color
+        self.visible      = visible
+        self.line_width   = line_width   # 2 or 3
+        self.offset_db    = offset_db    # vertical shift in dB
+        self.tolerance    = tolerance    # show ±tolerance band
+        self.tolerance_db = tolerance_db # half-width of band in dB
+        self.builtin      = builtin      # factory curve (shown greyed in dialog)
+
+
+# ── Built-in target curve generators ──────────────────────────────────
+
+def _tc_base_freqs():
+    import numpy as _np_tc
+    return _np_tc.logspace(_np_tc.log10(20), _np_tc.log10(20000), 400)
+
+def _builtin_tilt(tilt_db):
+    """Linear dB slope, 0 dB pivot at 1 kHz, total swing = tilt_db."""
+    import numpy as _np_tc
+    f = _tc_base_freqs()
+    log_f   = _np_tc.log10(f)
+    log_min = _np_tc.log10(20)
+    log_max = _np_tc.log10(20000)
+    slope   = tilt_db / (log_max - log_min)
+    return f, slope * (_np_tc.log10(1000) - log_f)
+
+def _builtin_haystack(peak_db):
+    """Gaussian hump peaking at ~250 Hz — classic live-sound target."""
+    import numpy as _np_tc
+    f        = _tc_base_freqs()
+    log_f    = _np_tc.log10(f)
+    peak_log = _np_tc.log10(250)
+    sigma    = 0.78   # decades
+    return f, peak_db * _np_tc.exp(-0.5 * ((log_f - peak_log) / sigma) ** 2)
+
+def _make_builtin_target_curves():
+    _COLS = ['#E040FB', '#AD1FD6', '#CC2222', '#FF5555']
+    specs = [
+        ('9dB Haystack',  _builtin_haystack(9),  _COLS[0], 3),
+        ('15dB Haystack', _builtin_haystack(15), _COLS[1], 3),
+        ('3dB Tilt',      _builtin_tilt(3),       _COLS[2], 2),
+        ('6dB Tilt',      _builtin_tilt(6),       _COLS[3], 2),
+    ]
+    out = []
+    for name, (f, db), col, lw in specs:
+        out.append(TargetCurve(
+            name=name, freqs=f, mag_db=db, color=col,
+            visible=False, line_width=lw, builtin=True))
+    return out
 
 
 # ── Fila de una traza en el panel ─────────────────────────────────────
@@ -878,14 +996,28 @@ class MeasurementCanvas(FigureCanvas):
         self.fig = Figure(facecolor=BG_PANEL)
         super().__init__(self.fig)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        # Callback que MainWindow conecta para recibir info del cursor
-        self.on_cursor_update = None
+        # Callbacks
+        self.on_cursor_update    = None
+        self.on_panel_menu       = None   # callable(anchor_widget) — abre menú de vistas
+        self.on_gear_clicked       = None   # callable() — opens Graph Settings TF tab
+        self.on_close_mag_panel    = None   # callable() — X/+ on Magnitude corner
+        self.on_close_ph_panel     = None   # callable() — X/+ on Phase corner
+        self.on_toggle_ir          = None   # callable() — toggle IR panel (Cmd+I)
+        self.on_panel1_changed     = None   # callable(type_name) — user changed panel 1 (Magnitude slot)
+        self.on_panel2_changed     = None   # callable(type_name) — user changed panel 2 (Phase slot)
+        self.on_engine_select_menu = None   # callable(anchor_widget) — engine picker
+        self.on_ir_peak_detected   = None   # callable(delay_ms: float) — IR argmax peak detected
         # Últimos datos para interpolación del cursor
         self._last_freqs     = None
         self._last_gamma2    = None
         self._last_mag_db    = None
         self._last_phase_deg = None
         self._last_ir        = None
+        # Last AVG data (for saving AVG trace)
+        self._last_avg_freqs     = None
+        self._last_avg_mag_db    = None
+        self._last_avg_phase_deg = None
+        self._last_avg_gamma2    = None
         self._fs             = 48000   # actualizado por MainWindow en cada refresh
         # Listas paralelas de líneas matplotlib para trazas almacenadas
         self._trace_tf_lines:  List = []
@@ -893,6 +1025,7 @@ class MeasurementCanvas(FigureCanvas):
         self._trace_ir_lines:  List = []
         self._trace_coh_lines: List = []
         self._target_lines: List = []   # dashed overlay lines on ax_tf
+        self._target_fills: List = []   # fill_between polycollections (tolerance bands)
         self._eng_colors = [ENGINE_PALETTE[0], ENGINE_PALETTE[1]]
         self._build()
         self._build_tf_overlay()
@@ -950,7 +1083,7 @@ class MeasurementCanvas(FigureCanvas):
         self.ax_coh = self.ax_tf.twinx()
 
         self.ax_tf.set_facecolor(BG_PLOT)
-        self.ax_tf.set_ylim(-30, 30)
+        self.ax_tf.set_ylim(-18, 18)
         # Panel central: grilla de frecuencias CON labels (siempre visibles)
         setup_smaart_axis(self.ax_tf, bg=BG_PLOT,
                           show_xlabels=True, show_xlabel=False)
@@ -962,12 +1095,16 @@ class MeasurementCanvas(FigureCanvas):
             self.ax_tf.axhline(_db, color=_col, lw=_lw, ls=_ls, zorder=0)
 
         # Alinear 0 de coherencia con 0 dB de TF
-        self._tf_ymin, self._tf_ymax = -30, 30
+        self._tf_ymin, self._tf_ymax = -18, 18
         self._coh_ymax = 1.05
         self.ax_coh.set_ylim(*self._coh_aligned_lim())
-        self.ax_coh.set_ylabel('γ²', fontsize=7, color=COH_COLOR, labelpad=1)
+        self.ax_coh.set_ylabel('γ²', fontsize=7, color=COH_COLOR, labelpad=4)
         self.ax_coh.tick_params(axis='y', colors=COH_COLOR, labelsize=6)
         self.ax_coh.set_yticks([0.0, 0.5, 1.0])
+        # Disable offset/scientific notation on coherence axis — prevents "×" artifacts
+        import matplotlib.ticker as _mticker
+        self.ax_coh.yaxis.set_major_formatter(_mticker.ScalarFormatter(useOffset=False))
+        self.ax_coh.yaxis.offsetText.set_visible(False)
         self.ax_coh.spines['right'].set_color(COH_COLOR)
         self.ax_coh.spines['right'].set_alpha(0.4)
         for sp in ('top', 'left', 'bottom'):
@@ -1031,9 +1168,13 @@ class MeasurementCanvas(FigureCanvas):
 
     def set_view_mode(self, mode: str):
         """
-        'full'            → IR + TF + Coherencia + Phase (layout original)
-        'magnitude_only'  → IR + TF + Coherencia sin Phase (Phase panel oculto)
-        'phase_only'      → solo Phase expandido, oculta IR/TF/Coh
+        'tf_phase'       → Magnitude + Phase,          IR oculto
+        'tf_phase_ir'    → IR + Magnitude + Phase       IR visible (20/40/40)
+        'magnitude_only' → solo Magnitude,              IR oculto
+        'magnitude_ir'   → IR + Magnitude solo          IR visible (30/70)
+        'phase_only'     → solo Phase,                  IR oculto
+        'phase_ir'       → IR + Phase solo              IR visible (30/70)
+        IR siempre controlado SOLO por Cmd+I — nunca por X/+ de los paneles.
         """
         # Guardar posiciones originales la primera vez (antes de cualquier cambio)
         if not hasattr(self, '_saved_ax_pos'):
@@ -1044,20 +1185,93 @@ class MeasurementCanvas(FigureCanvas):
                 'ph':  self.ax_ph.get_position().bounds,
             }
 
-        if mode == 'magnitude_only':
-            # Ocultar Phase, expandir TF para absorber ese espacio
+        p = self._saved_ax_pos
+
+        # Restore ax_ph to phase mode when leaving magnitude_magnitude
+        if getattr(self, '_view_mag_mag', False) and mode != 'magnitude_magnitude':
+            self._view_mag_mag = False
+            self.ax_ph.set_ylim(-185, 185)
+            self.ax_ph.set_ylabel('°', fontsize=7, color='#6a7a6a', labelpad=1)
+            self.ax_ph.set_yticks([-180, -90, 0, 90, 180])
+            self.ax_ph.tick_params(axis='y', labelsize=7, colors='#6a7a6a')
+        self._current_view_mode = mode
+
+        if mode == 'tf_phase':
+            # TF (60%) arriba + Phase (40%) abajo — proporciones tipo SMAART
+            self.ax_ir.set_visible(False)
+            self.ax_ph.set_visible(True)
+            self.ax_tf.set_visible(True)
+            self.ax_coh.set_visible(True)
+            self._ir_visible = False
+            L = p['tf'][0];  W = p['tf'][2]
+            canvas_bottom = p['ph'][1]
+            canvas_top    = p['ir'][1] + p['ir'][3]
+            total_h = canvas_top - canvas_bottom
+            GAP     = 0.04   # espacio entre paneles (en fracción de figura)
+            ph_h    = (total_h - GAP) * 0.50   # 50/50 — igual que SMAART
+            tf_h    = (total_h - GAP) * 0.50
+            ph_b    = canvas_bottom
+            tf_b    = ph_b + ph_h + GAP
+            self.ax_tf.set_position( [L, tf_b, W, tf_h])
+            self.ax_coh.set_position([L, tf_b, W, tf_h])
+            self.ax_ph.set_position( [L, ph_b, W, ph_h])
+            # Mostrar eje X en ambos paneles
+            self.ax_tf.tick_params(labelbottom=True)
+            self.ax_ph.tick_params(labelbottom=True)
+            # Frequency label on Magnitude panel (independent panels need their own)
+            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
+            for ln in self._trace_ph_lines:
+                ln.set_visible(True)
+            if hasattr(self, '_smooth_btn'):
+                self._smooth_btn.setVisible(True)
+
+        elif mode == 'tf_phase_ir':
+            # IR (20%) arriba, Magnitude (40%) medio, Phase (40%) abajo
+            for ax in (self.ax_ir, self.ax_tf, self.ax_coh, self.ax_ph):
+                ax.set_visible(True)
+            L = p['tf'][0];  W = p['tf'][2]
+            canvas_bottom = p['ph'][1]
+            canvas_top    = p['ir'][1] + p['ir'][3]
+            total_h = canvas_top - canvas_bottom
+            GAP     = 0.03
+            usable  = total_h - 2 * GAP
+            ir_h    = usable * 0.20
+            tf_h    = usable * 0.40
+            ph_h    = usable * 0.40
+            ph_b    = canvas_bottom
+            tf_b    = ph_b + ph_h + GAP
+            ir_b    = tf_b + tf_h + GAP
+            self.ax_ir.set_position( [L, ir_b, W, ir_h])
+            self.ax_tf.set_position( [L, tf_b, W, tf_h])
+            self.ax_coh.set_position([L, tf_b, W, tf_h])
+            self.ax_ph.set_position( [L, ph_b, W, ph_h])
+            # Restore Hz tick labels on ax_tf (log scale can reset formatter)
+            self.ax_tf.tick_params(labelbottom=True)
+            self.ax_tf.set_xlabel('')   # Phase (bottom) carries the label
+            _maj = [20,50,100,200,500,1000,2000,5000,10000,20000]
+            _lbl = ['20 Hz','50 Hz','100 Hz','200 Hz','500 Hz',
+                    '1 kHz','2 kHz','5 kHz','10 kHz','20 kHz']
+            self.ax_tf.set_xticks(_maj)
+            self.ax_tf.set_xticklabels(_lbl, fontsize=7, color='#9e9e9e')
+            for ln in self._trace_ph_lines:
+                ln.set_visible(True)
+            self._ir_visible = True
+            if hasattr(self, '_smooth_btn'):
+                self._smooth_btn.setVisible(True)
+
+        elif mode == 'magnitude_only':
+            # Solo TF+Coh — sin IR, sin Phase, expandido al canvas completo
+            self.ax_ir.set_visible(False)
             self.ax_ph.set_visible(False)
             self.ax_tf.set_visible(True)
             self.ax_coh.set_visible(True)
-            # IR siempre visible en Magnitude (Cmd+I lo puede ocultar después)
-            self.ax_ir.set_visible(True)
-            self._ir_visible = True
-            p = self._saved_ax_pos
-            # Nueva altura de TF: desde el fondo del Phase hasta el tope actual del TF
-            new_tf_y = p['ph'][1]
-            new_tf_h = p['tf'][3] + (p['tf'][1] - p['ph'][1])
-            self.ax_tf.set_position( [p['tf'][0], new_tf_y, p['tf'][2], new_tf_h])
-            self.ax_coh.set_position([p['tf'][0], new_tf_y, p['tf'][2], new_tf_h])
+            self._ir_visible = False
+            new_tf_b = p['ph'][1]
+            new_tf_h = (p['ir'][1] + p['ir'][3]) - p['ph'][1]
+            self.ax_tf.set_position( [p['tf'][0], new_tf_b, p['tf'][2], new_tf_h])
+            self.ax_coh.set_position([p['tf'][0], new_tf_b, p['tf'][2], new_tf_h])
+            self.ax_tf.tick_params(labelbottom=True)
+            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
             if hasattr(self, '_smooth_btn'):
                 self._smooth_btn.setVisible(True)
 
@@ -1065,34 +1279,133 @@ class MeasurementCanvas(FigureCanvas):
             for ax in (self.ax_ir, self.ax_tf, self.ax_coh):
                 ax.set_visible(False)
             self.ax_ph.set_visible(True)
-            # Expandir Phase para llenar el canvas
             self.ax_ph.set_position([0.055, 0.07, 0.880, 0.91])
-            # Forzar visibilidad de trazas guardadas en Phase
+            for ln in self._trace_ph_lines:
+                ln.set_visible(True)
+            self._ir_visible = False
+            if hasattr(self, '_smooth_btn'):
+                self._smooth_btn.setVisible(False)
+
+        elif mode == 'magnitude_ir':
+            # IR (30%) arriba + Magnitude (70%) abajo — sin Phase
+            self.ax_ir.set_visible(True)
+            self.ax_tf.set_visible(True)
+            self.ax_coh.set_visible(True)
+            self.ax_ph.set_visible(False)
+            self._ir_visible = True
+            L = p['tf'][0];  W = p['tf'][2]
+            canvas_bottom = p['ph'][1]
+            canvas_top    = p['ir'][1] + p['ir'][3]
+            total_h = canvas_top - canvas_bottom
+            GAP  = 0.03
+            ir_h = (total_h - GAP) * 0.30
+            tf_h = (total_h - GAP) * 0.70
+            tf_b = canvas_bottom
+            ir_b = tf_b + tf_h + GAP
+            self.ax_ir.set_position( [L, ir_b, W, ir_h])
+            self.ax_tf.set_position( [L, tf_b, W, tf_h])
+            self.ax_coh.set_position([L, tf_b, W, tf_h])
+            self.ax_tf.tick_params(labelbottom=True)
+            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
+            _maj = [20,50,100,200,500,1000,2000,5000,10000,20000]
+            _lbl = ['20 Hz','50 Hz','100 Hz','200 Hz','500 Hz',
+                    '1 kHz','2 kHz','5 kHz','10 kHz','20 kHz']
+            self.ax_tf.set_xticks(_maj)
+            self.ax_tf.set_xticklabels(_lbl, fontsize=7, color='#9e9e9e')
+            if hasattr(self, '_smooth_btn'):
+                self._smooth_btn.setVisible(True)
+
+        elif mode == 'phase_ir':
+            # IR (30%) arriba + Phase (70%) abajo — sin Magnitude
+            self.ax_ir.set_visible(True)
+            self.ax_tf.set_visible(False)
+            self.ax_coh.set_visible(False)
+            self.ax_ph.set_visible(True)
+            self._ir_visible = True
+            L = p['tf'][0];  W = p['tf'][2]
+            canvas_bottom = p['ph'][1]
+            canvas_top    = p['ir'][1] + p['ir'][3]
+            total_h = canvas_top - canvas_bottom
+            GAP  = 0.03
+            ir_h = (total_h - GAP) * 0.30
+            ph_h = (total_h - GAP) * 0.70
+            ph_b = canvas_bottom
+            ir_b = ph_b + ph_h + GAP
+            self.ax_ir.set_position([L, ir_b, W, ir_h])
+            self.ax_ph.set_position([L, ph_b, W, ph_h])
             for ln in self._trace_ph_lines:
                 ln.set_visible(True)
             if hasattr(self, '_smooth_btn'):
                 self._smooth_btn.setVisible(False)
 
-        else:  # 'full'
-            for ax in (self.ax_ir, self.ax_tf, self.ax_coh, self.ax_ph):
-                ax.set_visible(True)
-            p = self._saved_ax_pos
-            self.ax_ir.set_position(p['ir'])
-            self.ax_tf.set_position(p['tf'])
-            self.ax_coh.set_position(p['coh'])
-            self.ax_ph.set_position(p['ph'])
+        elif mode == 'magnitude_magnitude':
+            # Both top and bottom show magnitude — ax_ph repurposed as second magnitude panel
+            self.ax_ir.set_visible(False)
+            self.ax_ph.set_visible(True)
+            self.ax_tf.set_visible(True)
+            self.ax_coh.set_visible(True)
+            self._ir_visible = False
+            self._view_mag_mag = True
+            # Layout: 50/50 identical to tf_phase
+            L = p['tf'][0];  W = p['tf'][2]
+            canvas_bottom = p['ph'][1]
+            canvas_top    = p['ir'][1] + p['ir'][3]
+            total_h = canvas_top - canvas_bottom
+            GAP     = 0.04
+            ph_h    = (total_h - GAP) * 0.50
+            tf_h    = (total_h - GAP) * 0.50
+            ph_b    = canvas_bottom
+            tf_b    = ph_b + ph_h + GAP
+            self.ax_tf.set_position( [L, tf_b, W, tf_h])
+            self.ax_coh.set_position([L, tf_b, W, tf_h])
+            self.ax_ph.set_position( [L, ph_b, W, ph_h])
+            # Configure ax_ph to look like a second magnitude panel
+            _ymin, _ymax = self.ax_tf.get_ylim()
+            # Set yticks BEFORE ylim to prevent matplotlib auto-expanding the range
+            _step = 6 if (_ymax - _ymin) <= 36 else 12
+            _yticks = [v for v in range(int(_ymin) - _step, int(_ymax) + _step + 1, _step)
+                       if _ymin <= v <= _ymax]
+            self.ax_ph.set_yticks(_yticks)
+            self.ax_ph.set_ylim(_ymin, _ymax)   # AFTER set_yticks — prevents auto-expansion
+            self.ax_ph.set_ylabel('dB', fontsize=7, color='#6a7a6a', labelpad=1)
+            self.ax_ph.set_yscale('linear')
+            self.ax_ph.tick_params(axis='y', labelsize=7, colors='#6a7a6a')
+            self.ax_tf.tick_params(labelbottom=True)
+            self.ax_ph.tick_params(labelbottom=True)
+            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
+            self.ax_ph.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
             if hasattr(self, '_smooth_btn'):
                 self._smooth_btn.setVisible(True)
 
+        # Update X/+ corner buttons — IR never affects this logic
+        _m = self._current_view_mode
+        if hasattr(self, '_mag_close_btn'):
+            # ✕ = Magnitude visible alongside Phase → can remove it
+            # ＋ = Magnitude is the only visible panel (or not visible) → can add Phase
+            mag_dual = _m in ('tf_phase', 'tf_phase_ir')
+            self._mag_close_btn.setText('✕' if mag_dual else '＋')
+        if hasattr(self, '_ph_close_btn'):
+            ph_dual = _m in ('tf_phase', 'tf_phase_ir')
+            self._ph_close_btn.setText('✕' if ph_dual else '＋')
+
         self.draw_idle()
-        # Reubicar el botón de resolución al nuevo fondo del eje TF
-        if hasattr(self, '_smooth_btn'):
+        if hasattr(self, '_smooth_btn') or hasattr(self, '_mag_lbl'):
             self._position_tf_overlay()
 
-    # ── Overlay de suavizado — esquina inferior derecha del TF panel ──
+    # ── Panel overlays (labels + resolution buttons inside each panel) ──
 
     def _build_tf_overlay(self):
-        _btn_ss = (
+        _lbl_ss = (
+            'QPushButton{'
+            f'  background:rgba(20,26,20,180); color:{TEXT_HI};'
+            '   border:none; border-radius:2px;'
+            '   font-size:11px; font-weight:bold; padding:2px 6px;'
+            '}'
+            'QPushButton:hover{'
+            f'  background:rgba(42,60,42,200); color:{GREEN};'
+            '}'
+        )
+        _res_ss = (
             'QPushButton{'
             f'  background:#1e221e; color:{TEXT_HI};'
             '   border:1px solid #3a3a3a; border-radius:2px;'
@@ -1102,14 +1415,158 @@ class MeasurementCanvas(FigureCanvas):
             f'  background:#2a322a; border-color:{GREEN};'
             '}'
         )
+        _eng_ss = (
+            'QPushButton{'
+            f'  background:rgba(20,26,20,160); color:#6a8a6a;'
+            '   border:none; border-radius:2px;'
+            '   font-size:9px; padding:2px 5px;'
+            '}'
+        )
+        _xplus_ss = (
+            'QPushButton{'
+            f'  background:rgba(20,26,20,180); color:{TEXT_MID};'
+            '   border:1px solid #3a3a3a; border-radius:2px;'
+            '   font-size:11px; font-weight:bold; padding:0px 5px;'
+            '}'
+            'QPushButton:hover{'
+            f'  background:rgba(42,60,42,210); color:{TEXT_HI};'
+            '}'
+        )
+        _gear_ss = (
+            'QPushButton{'
+            f'  background:#1e221e; color:{TEXT_MID};'
+            '   border:1px solid #3a3a3a; border-radius:2px;'
+            '   font-size:12px; padding:1px 4px;'
+            '}'
+            'QPushButton:hover{'
+            f'  background:#2a322a; color:{TEXT_HI};'
+            '}'
+        )
+
+        # ── Magnitude label — top-left of ax_tf ──────────────────────
+        self._mag_lbl = QPushButton('Magnitude ▾', self)
+        self._mag_lbl.setStyleSheet(_lbl_ss)
+        self._mag_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mag_lbl.clicked.connect(self._show_mag_panel_menu)
+        self._mag_lbl.raise_()
+
+        # ── Engine name — top-right of ax_tf (clickable: selects engine) ──
+        self._mag_eng_lbl = QPushButton('—', self)
+        self._mag_eng_lbl.setStyleSheet(_eng_ss)
+        self._mag_eng_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mag_eng_lbl.clicked.connect(
+            lambda: self.on_engine_select_menu(self._mag_eng_lbl)
+            if self.on_engine_select_menu else None)
+        self._mag_eng_lbl.raise_()
+
+        # ── X / + button — bottom-left of ax_tf ──────────────────────
+        self._mag_close_btn = QPushButton('✕', self)
+        self._mag_close_btn.setStyleSheet(_xplus_ss)
+        self._mag_close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mag_close_btn.clicked.connect(self._on_close_mag)
+        self._mag_close_btn.raise_()
+
+        # ── Phase label — top-left of ax_ph ──────────────────────────
+        self._ph_lbl = QPushButton('Phase ▾', self)
+        self._ph_lbl.setStyleSheet(_lbl_ss)
+        self._ph_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._ph_lbl.clicked.connect(self._show_ph_panel_menu)
+        self._ph_lbl.raise_()
+
+        # ── Engine name — top-right of ax_ph (clickable: selects engine) ──
+        self._ph_eng_lbl = QPushButton('—', self)
+        self._ph_eng_lbl.setStyleSheet(_eng_ss)
+        self._ph_eng_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._ph_eng_lbl.clicked.connect(
+            lambda: self.on_engine_select_menu(self._ph_eng_lbl)
+            if self.on_engine_select_menu else None)
+        self._ph_eng_lbl.raise_()
+
+        # ── X / + button — bottom-left of ax_ph ──────────────────────
+        self._ph_close_btn = QPushButton('✕', self)
+        self._ph_close_btn.setStyleSheet(_xplus_ss)
+        self._ph_close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._ph_close_btn.clicked.connect(self._on_close_ph)
+        self._ph_close_btn.raise_()
+
+        # ── Resolution button — bottom-right of ax_tf ─────────────────
         self._smooth_btn = QPushButton('1/12 Oct ▼', self)
-        self._smooth_btn.setStyleSheet(_btn_ss)
+        self._smooth_btn.setStyleSheet(_res_ss)
         self._smooth_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._smooth_btn.setToolTip('TF Smoothing')
+        self._smooth_btn.setToolTip('Smoothing (linked Mag + Phase)')
         self._smooth_btn.clicked.connect(self._show_smooth_menu)
         self._smooth_btn.raise_()
+
+        # ── Gear button — bottom-right of ax_tf (right of resolution) ─
+        self._mag_gear_btn = QPushButton('⚙', self)
+        self._mag_gear_btn.setStyleSheet(_gear_ss)
+        self._mag_gear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mag_gear_btn.setToolTip('Graph Settings')
+        self._mag_gear_btn.clicked.connect(self._on_gear)
+        self._mag_gear_btn.raise_()
+
+        # ── Resolution button — bottom-right of ax_ph ─────────────────
+        self._ph_smooth_btn = QPushButton('1/12 Oct ▼', self)
+        self._ph_smooth_btn.setStyleSheet(_res_ss)
+        self._ph_smooth_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._ph_smooth_btn.setToolTip('Smoothing (linked Mag + Phase)')
+        self._ph_smooth_btn.clicked.connect(self._show_smooth_menu)
+        self._ph_smooth_btn.raise_()
+
+        # ── Gear button — bottom-right of ax_ph (right of resolution) ─
+        self._ph_gear_btn = QPushButton('⚙', self)
+        self._ph_gear_btn.setStyleSheet(_gear_ss)
+        self._ph_gear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._ph_gear_btn.setToolTip('Graph Settings')
+        self._ph_gear_btn.clicked.connect(self._on_gear)
+        self._ph_gear_btn.raise_()
+
         self.on_smooth_changed = None   # callable(fraction) — MainWindow lo enlaza
         self._position_tf_overlay()
+
+    def _show_mag_panel_menu(self):
+        """Slot-1 panel menu — choose what this panel shows."""
+        _ss = (
+            'QMenu{background:#1a1a1a;color:#cccccc;border:1px solid #3a3a3a;'
+            'font-size:11px;padding:2px 0;}'
+            'QMenu::item{padding:5px 20px 5px 10px;}'
+            'QMenu::item:selected{background:#2a382a;color:#88cc88;}'
+            'QMenu::item:checked{font-weight:bold;}'
+        )
+        menu = QMenu(self)
+        menu.setStyleSheet(_ss)
+        _cur1 = getattr(self, '_slot1_type', 'magnitude')
+        for name in ('Magnitude', 'Phase', 'RTA', 'Spectrograph'):
+            act = menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(name.lower() == _cur1)
+            act.triggered.connect(
+                lambda checked, n=name: self.on_panel1_changed(n) if self.on_panel1_changed else None)
+        menu.exec(self._mag_lbl.mapToGlobal(self._mag_lbl.rect().bottomLeft()))
+
+    def _show_ph_panel_menu(self):
+        """Slot-2 panel menu — choose what this panel shows."""
+        _ss = (
+            'QMenu{background:#1a1a1a;color:#cccccc;border:1px solid #3a3a3a;'
+            'font-size:11px;padding:2px 0;}'
+            'QMenu::item{padding:5px 20px 5px 10px;}'
+            'QMenu::item:selected{background:#2a382a;color:#88cc88;}'
+            'QMenu::item:checked{font-weight:bold;}'
+        )
+        menu = QMenu(self)
+        menu.setStyleSheet(_ss)
+        _cur2 = getattr(self, '_slot2_type', 'phase')
+        for name in ('Magnitude', 'Phase', 'RTA', 'Spectrograph'):
+            act = menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(name.lower() == _cur2)
+            act.triggered.connect(
+                lambda checked, n=name: self.on_panel2_changed(n) if self.on_panel2_changed else None)
+        menu.exec(self._ph_lbl.mapToGlobal(self._ph_lbl.rect().bottomLeft()))
+
+    def _emit_toggle_ir(self):
+        if self.on_toggle_ir:
+            self.on_toggle_ir()
 
     def add_target_curve(self, freqs, db, color='#FFD60A', name='Target'):
         """Add a dashed target curve overlay on the TF magnitude axis."""
@@ -1134,34 +1591,152 @@ class MeasurementCanvas(FigureCanvas):
             self._target_lines[idx].set_visible(visible)
             self.draw_idle()
 
+    def update_target_curves(self, curves):
+        """
+        Full redraw of all target curve overlays on ax_tf.
+        Replaces the old per-index add/remove API.
+        curves: list of TargetCurve objects.
+        """
+        # Clear all existing target artists
+        for ln in list(self._target_lines):
+            try: ln.remove()
+            except Exception: pass
+        self._target_lines.clear()
+        for poly in list(self._target_fills):
+            try: poly.remove()
+            except Exception: pass
+        self._target_fills.clear()
+
+        for tc in curves:
+            if not tc.visible:
+                continue
+            mag = tc.mag_db + tc.offset_db
+            lw  = float(tc.line_width)
+            ln, = self.ax_tf.semilogx(
+                tc.freqs, mag, '--',
+                color=tc.color, linewidth=lw,
+                alpha=0.80, zorder=4, label=tc.name)
+            self._target_lines.append(ln)
+            if tc.tolerance and tc.tolerance_db > 0:
+                tdb = tc.tolerance_db
+                # Shaded acceptance band
+                poly = self.ax_tf.fill_between(
+                    tc.freqs,
+                    mag - tdb,
+                    mag + tdb,
+                    color=tc.color, alpha=0.16, zorder=3)
+                self._target_fills.append(poly)
+                # Upper and lower edge lines
+                lo, = self.ax_tf.semilogx(
+                    tc.freqs, mag + tdb, ':',
+                    color=tc.color, linewidth=0.8, alpha=0.55, zorder=4)
+                hi, = self.ax_tf.semilogx(
+                    tc.freqs, mag - tdb, ':',
+                    color=tc.color, linewidth=0.8, alpha=0.55, zorder=4)
+                self._target_lines.extend([lo, hi])
+
+        self.draw_idle()
+
     def _position_tf_overlay(self):
-        """
-        Posiciona el botón en la esquina inferior-derecha del panel TF (ax_tf).
-        En modo phase_only usa ax_ph porque ax_tf está oculto.
-        """
+        """Posiciona los 10 overlays de esquinas en cada panel — estilo SMAART."""
         w, h = self.width(), self.height()
         if w < 30 or h < 30:
             return
-        try:
-            # Si ax_tf está oculto y ax_ph visible → modo phase_only → anclar a Phase
-            if not self.ax_tf.get_visible() and self.ax_ph.get_visible():
-                pos = self.ax_ph.get_position()
-            else:
-                pos = self.ax_tf.get_position()
-            ax_right  = pos.x1   # borde derecho en coord. figura [0,1]
-            ax_bottom = pos.y0   # borde inferior
-        except Exception:
-            ax_right, ax_bottom = 0.935, 0.302
-        rw = max(self._smooth_btn.sizeHint().width(), 84)
-        rh = 22
-        self._smooth_btn.resize(rw, rh)
-        x_btn = int(w * ax_right)  - rw - 4
-        y_btn = int(h * (1.0 - ax_bottom)) - rh - 2   # convertir fig→Qt (y desde arriba)
-        self._smooth_btn.move(x_btn, y_btn)
+
+        def _ax_rect(ax):
+            """(left, top, right, bottom) en coordenadas Qt px (y=0 arriba)."""
+            p = ax.get_position()
+            return (int(w * p.x0), int(h * (1 - p.y1)),
+                    int(w * p.x1), int(h * (1 - p.y0)))
+
+        RES_W, RES_H = 84, 20
+        GEAR_W, GEAR_H = 22, 20
+        LBL_H  = 20
+        ENG_H  = 18
+        XP_W, XP_H = 22, 20   # X / + close-add button
+
+        tf_vis = self.ax_tf.get_visible()
+        ph_vis = self.ax_ph.get_visible()
+
+        # ── MAGNITUDE panel ───────────────────────────────────────────
+        if tf_vis:
+            l, t, r, b = _ax_rect(self.ax_tf)
+
+            # Top-left: Magnitude ▾
+            if hasattr(self, '_mag_lbl'):
+                lw = max(self._mag_lbl.sizeHint().width(), 90)
+                self._mag_lbl.resize(lw, LBL_H)
+                self._mag_lbl.move(l + 4, t + 4)
+                self._mag_lbl.setVisible(True)
+
+            # Top-right: engine name
+            if hasattr(self, '_mag_eng_lbl'):
+                ew = max(self._mag_eng_lbl.sizeHint().width(), 60)
+                self._mag_eng_lbl.resize(ew, ENG_H)
+                self._mag_eng_lbl.move(r - ew - 4, t + 4)
+                self._mag_eng_lbl.setVisible(True)
+
+            # Bottom-left: ✕ or ＋
+            if hasattr(self, '_mag_close_btn'):
+                self._mag_close_btn.resize(XP_W, XP_H)
+                self._mag_close_btn.move(l + 4, b - XP_H - 4)
+                self._mag_close_btn.setVisible(True)
+
+            # Bottom-right: gear ⚙ then resolution
+            if hasattr(self, '_mag_gear_btn') and hasattr(self, '_smooth_btn'):
+                self._mag_gear_btn.resize(GEAR_W, GEAR_H)
+                self._mag_gear_btn.move(r - GEAR_W - 2, b - GEAR_H - 4)
+                self._mag_gear_btn.setVisible(True)
+                self._smooth_btn.resize(RES_W, RES_H)
+                self._smooth_btn.move(r - GEAR_W - RES_W - 6, b - RES_H - 4)
+                self._smooth_btn.setVisible(True)
+        else:
+            for attr in ('_mag_lbl', '_mag_eng_lbl', '_mag_close_btn',
+                         '_smooth_btn', '_mag_gear_btn'):
+                if hasattr(self, attr):
+                    getattr(self, attr).setVisible(False)
+
+        # ── PHASE panel ───────────────────────────────────────────────
+        if ph_vis:
+            l, t, r, b = _ax_rect(self.ax_ph)
+
+            # Top-left: Phase ▾ (or Magnitude ▾ in mag_mag mode — needs more width)
+            if hasattr(self, '_ph_lbl'):
+                lw = max(self._ph_lbl.sizeHint().width(), 90)
+                self._ph_lbl.resize(lw, LBL_H)
+                self._ph_lbl.move(l + 4, t + 4)
+                self._ph_lbl.setVisible(True)
+
+            # Top-right: engine name
+            if hasattr(self, '_ph_eng_lbl'):
+                ew = max(self._ph_eng_lbl.sizeHint().width(), 60)
+                self._ph_eng_lbl.resize(ew, ENG_H)
+                self._ph_eng_lbl.move(r - ew - 4, t + 4)
+                self._ph_eng_lbl.setVisible(True)
+
+            # Bottom-left: ✕ or ＋
+            if hasattr(self, '_ph_close_btn'):
+                self._ph_close_btn.resize(XP_W, XP_H)
+                self._ph_close_btn.move(l + 4, b - XP_H - 4)
+                self._ph_close_btn.setVisible(True)
+
+            # Bottom-right: gear ⚙ then resolution
+            if hasattr(self, '_ph_gear_btn') and hasattr(self, '_ph_smooth_btn'):
+                self._ph_gear_btn.resize(GEAR_W, GEAR_H)
+                self._ph_gear_btn.move(r - GEAR_W - 2, b - GEAR_H - 4)
+                self._ph_gear_btn.setVisible(True)
+                self._ph_smooth_btn.resize(RES_W, RES_H)
+                self._ph_smooth_btn.move(r - GEAR_W - RES_W - 6, b - RES_H - 4)
+                self._ph_smooth_btn.setVisible(True)
+        else:
+            for attr in ('_ph_lbl', '_ph_eng_lbl', '_ph_close_btn',
+                         '_ph_smooth_btn', '_ph_gear_btn'):
+                if hasattr(self, attr):
+                    getattr(self, attr).setVisible(False)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, '_smooth_btn'):
+        if hasattr(self, '_smooth_btn') or hasattr(self, '_mag_lbl'):
             self._position_tf_overlay()
 
     def _show_smooth_menu(self):
@@ -1185,9 +1760,39 @@ class MeasurementCanvas(FigureCanvas):
 
     def _set_smooth(self, frac: int, label: str):
         self._current_smooth = frac
-        self._smooth_btn.setText(f'{label} ▼')
+        txt = f'{label} ▼'
+        # Sync both resolution buttons — resolution is always linked
+        if hasattr(self, '_smooth_btn'):
+            self._smooth_btn.setText(txt)
+        if hasattr(self, '_ph_smooth_btn'):
+            self._ph_smooth_btn.setText(txt)
         if self.on_smooth_changed:
             self.on_smooth_changed(frac)
+
+    def _on_gear(self):
+        """Gear button on any panel → open Graph Settings (TF tab)."""
+        if self.on_gear_clicked:
+            self.on_gear_clicked()
+
+    def _on_close_mag(self):
+        """X/+ on Magnitude panel corner."""
+        if self.on_close_mag_panel:
+            self.on_close_mag_panel()
+
+    def _on_close_ph(self):
+        """X/+ on Phase panel corner."""
+        if self.on_close_ph_panel:
+            self.on_close_ph_panel()
+
+    def update_engine_label(self, name: str):
+        """Update top-right engine name on both panels."""
+        if hasattr(self, '_mag_eng_lbl'):
+            self._mag_eng_lbl.setText(name)
+            self._mag_eng_lbl.adjustSize()
+        if hasattr(self, '_ph_eng_lbl'):
+            self._ph_eng_lbl.setText(name)
+            self._ph_eng_lbl.adjustSize()
+        self._position_tf_overlay()
 
     def _coh_aligned_lim(self):
         """Calcula ylim del eje coherencia para alinear coh=0 con TF=0 dB."""
@@ -1303,8 +1908,11 @@ class MeasurementCanvas(FigureCanvas):
         mask = (freqs >= 20) & (freqs <= 20000)
         f    = freqs[mask]
         self._lines_tf[idx].set_data(f, mag_db[mask])
-        ph_wrap = ((phase_deg[mask] + 180.0) % 360.0) - 180.0
-        self._lines_ph[idx].set_data(f, ph_wrap)
+        if getattr(self, '_view_mag_mag', False):
+            self._lines_ph[idx].set_data(f, mag_db[mask])
+        else:
+            ph_wrap = ((phase_deg[mask] + 180.0) % 360.0) - 180.0
+            self._lines_ph[idx].set_data(f, ph_wrap)
 
     # ── Update ────────────────────────────────────────────────────────
 
@@ -1312,9 +1920,13 @@ class MeasurementCanvas(FigureCanvas):
                      coh_thresh=0.5, unwrap_phase=False,
                      coh_squared=True, phase_as_gd=False):
         # Sincronizar COLOR de Phase con TF cada frame (garantiza que siempre coincidan).
-        # El alpha/linewidth lo controla highlight_engine — NO lo tocamos aquí.
+        # En magnitude_magnitude mode también sincronizar alpha/linewidth para que ambos
+        # paneles muestren los engines con el mismo peso visual.
         for ltf, lph in zip(self._lines_tf, self._lines_ph):
             lph.set_color(ltf.get_color())
+            if getattr(self, '_view_mag_mag', False):
+                lph.set_alpha(ltf.get_alpha())
+                lph.set_linewidth(ltf.get_linewidth())
 
         # Guardar para interpolación del cursor
         self._last_freqs     = freqs
@@ -1340,9 +1952,10 @@ class MeasurementCanvas(FigureCanvas):
         ok = gamma2[mask] >= coh_thresh
 
         # Phase — sin gate de coherencia (se muestra siempre el rango completo)
-        # La coherencia baja se distingue visualmente por el color/alpha de la curva,
-        # no por blanquear puntos individuales (igual que SMAART en modo Phase).
-        if phase_as_gd:
+        if getattr(self, '_view_mag_mag', False):
+            # magnitude_magnitude mode: bottom panel mirrors top magnitude
+            self.line_ph.set_data(f, mag_db[mask])
+        elif phase_as_gd:
             ph_rad = np.unwrap(phase_deg[mask] * np.pi / 180.0)
             omega  = 2.0 * np.pi * f
             gd_ms  = -np.gradient(ph_rad, omega) * 1000.0
@@ -1390,7 +2003,46 @@ class MeasurementCanvas(FigureCanvas):
             if mask_t.sum() > 2:
                 self.line_ir.set_data(t_plot[mask_t], ir[mask_t])
             self.txt_ir_delay.set_text(lbl)
+            # Notify MainWindow so the active engine card can display the detected delay
+            if abs(peak_t) > 0.01 and self.on_ir_peak_detected:
+                self.on_ir_peak_detected(peak_t)
 
+        self.draw_idle()
+
+    def update_ir_only(self, ir):
+        """Update ONLY the IR panel — for when the selected engine is not engine 0.
+        Reuses identical logic to the IR section in update_plots()."""
+        if ir is None or len(ir) == 0:
+            self.draw_idle()
+            return
+        N_ir    = len(ir)
+        nperseg = getattr(self, '_nperseg', N_ir // 4)
+        dt_ms   = nperseg * 1000.0 / (N_ir * float(self._fs))
+        t_abs   = (np.arange(N_ir) - N_ir // 2) * dt_ms
+        half_ms = (N_ir // 2) * dt_ms
+
+        peak_idx = int(np.argmax(np.abs(ir)))
+        peak_t   = t_abs[peak_idx]
+
+        if getattr(self, '_ir_centered', False):
+            t_plot = t_abs - peak_t
+            zoom   = min(50.0, half_ms)
+            self.ax_ir.set_xlim(-zoom, zoom)
+            self.line_ir_peak.set_xdata([0, 0])
+            lbl = f'{peak_t:+.2f} ms'
+        else:
+            t_plot = t_abs
+            self.ax_ir.set_xlim(-half_ms, half_ms)
+            self.line_ir_peak.set_xdata([peak_t, peak_t])
+            lbl = f'{peak_t:.2f} ms' if abs(peak_t) > 0.05 else ''
+
+        xmin, xmax = self.ax_ir.get_xlim()
+        mask_t = (t_plot >= xmin) & (t_plot <= xmax)
+        if mask_t.sum() > 2:
+            self.line_ir.set_data(t_plot[mask_t], ir[mask_t])
+        self.txt_ir_delay.set_text(lbl)
+        if abs(peak_t) > 0.01 and self.on_ir_peak_detected:
+            self.on_ir_peak_detected(peak_t)
         self.draw_idle()
 
     def update_ch2(self, freqs, mag_db, phase_deg, gamma2, coh_thresh=0.5):
@@ -1402,15 +2054,21 @@ class MeasurementCanvas(FigureCanvas):
         mask = (freqs >= 20) & (freqs <= 20000)
         f    = freqs[mask]
         self.line_tf2.set_data(f, mag_db[mask])
-        # Phase sin gate de coherencia — se muestra completa
-        ph_wrap = ((phase_deg[mask] + 180.0) % 360.0) - 180.0
-        self.line_ph2.set_data(f, ph_wrap)
+        if getattr(self, '_view_mag_mag', False):
+            self.line_ph2.set_data(f, mag_db[mask])
+        else:
+            ph_wrap = ((phase_deg[mask] + 180.0) % 360.0) - 180.0
+            self.line_ph2.set_data(f, ph_wrap)
 
     def update_avg(self, freqs, mag_db_avg, phase_deg_avg, gamma2, coh_thresh=0.5):
         """Actualiza la línea de promedio CH1+CH2."""
         if freqs is None:
             self.line_tf_avg.set_data([], [])
             self.line_ph_avg.set_data([], [])
+            self._last_avg_freqs     = None
+            self._last_avg_mag_db    = None
+            self._last_avg_phase_deg = None
+            self._last_avg_gamma2    = None
             return
         mask = (freqs >= 20) & (freqs <= 20000)
         f    = freqs[mask]
@@ -1418,6 +2076,11 @@ class MeasurementCanvas(FigureCanvas):
         # Phase sin gate de coherencia — promedio siempre completo
         ph_wrap = ((phase_deg_avg[mask] + 180.0) % 360.0) - 180.0
         self.line_ph_avg.set_data(f, ph_wrap)
+        # Store for trace capture
+        self._last_avg_freqs     = f
+        self._last_avg_mag_db    = mag_db_avg[mask]
+        self._last_avg_phase_deg = ph_wrap
+        self._last_avg_gamma2    = gamma2[mask] if gamma2 is not None else None
 
     def update_ir_range(self, ms):
         """Cambia el rango visible ±ms/2. El eje siempre es simétrico alrededor de 0."""
@@ -1535,6 +2198,7 @@ class MeasurementCanvas(FigureCanvas):
         ph_wrap = ((phase_deg[mask] + 180.0) % 360.0) - 180.0
         line_ph, = self.ax_ph.semilogx(
             f, ph_wrap, color=color, lw=1.0, alpha=0.70, ls='--', zorder=2)
+        line_ph.set_visible(True)   # explicit: axis may be hidden at save time
         self._trace_ph_lines.append(line_ph)
 
         # Coherencia γ² — línea punteada sobre ax_coh
@@ -2374,10 +3038,11 @@ class TFEngine(QWidget):
     def __init__(self, number: int, color: str,
                  on_channels_changed, on_remove, on_find_delay,
                  on_select=None, on_normalize=None, on_active_changed=None,
-                 on_color_changed=None, parent=None):
+                 on_color_changed=None, name: str = '', parent=None):
         super().__init__(parent)
         self._color              = color
         self._number             = number
+        self._name               = name.strip() or str(number)
         self._delay_comp_ms      = 0.0
         self._active             = False   # inicia inactivo; el usuario presiona ▶
         self._selected           = False
@@ -2421,12 +3086,13 @@ class TFEngine(QWidget):
         self._dot = dot
         r1.addWidget(dot)
 
-        # Número
-        lbl_num = QLabel(str(number))
-        lbl_num.setStyleSheet(
-            f'color:#cccccc;font-size:16px;font-weight:bold;'
+        # Nombre (user-given name, or number as fallback)
+        self._name_lbl = QLabel(self._name)
+        self._name_lbl.setStyleSheet(
+            f'color:#cccccc;font-size:13px;font-weight:bold;'
             f'background:transparent;')
-        r1.addWidget(lbl_num, stretch=1)
+        self._name_lbl.setWordWrap(False)
+        r1.addWidget(self._name_lbl, stretch=1)
 
         # Botón ▶ (play/pause por engine)
         self.btn_play = QPushButton('▶')
@@ -2610,6 +3276,11 @@ class TFEngine(QWidget):
         self._delay_comp_ms = 0.0
         self.lbl_delay.setText('—')
 
+    def show_detected_delay(self, ms: float):
+        """Display IR-detected delay in the card label (read-only — does NOT apply compensation)."""
+        sign = '+' if ms >= 0 else ''
+        self.lbl_delay.setText(f'{sign}{ms:.2f} ms')
+
     @property
     def active(self) -> bool:
         return self._active
@@ -2634,11 +3305,11 @@ class SecondaryPanel(QWidget):
     Los datos llegan desde MainWindow en el ciclo de refresh.
     """
 
-    _VIEWS = ['Magnitude', 'Phase', 'Spectrum', 'Spectrograph']
+    _VIEWS = ['Magnitude', 'Phase', 'RTA', 'Spectrograph']
 
     def __init__(self, on_close, parent=None):
         super().__init__(parent)
-        self._current_view = 'Spectrum'
+        self._current_view = 'RTA'
         self._on_close = on_close
 
         lay = QVBoxLayout(self)
@@ -2723,9 +3394,11 @@ class SecondaryPanel(QWidget):
         self._btn_view.adjustSize()
         if view in ('Magnitude', 'Phase'):
             self._stack.setCurrentIndex(0)
-            self.canvas_meas.set_view_mode(
-                'phase_only' if view == 'Phase' else 'full')
-        elif view == 'Spectrum':
+            if view == 'Phase':
+                self.canvas_meas.set_view_mode('phase_only')
+            else:
+                self.canvas_meas.set_view_mode('tf_phase')
+        elif view == 'RTA':
             self._stack.setCurrentIndex(1)
         elif view == 'Spectrograph':
             self._stack.setCurrentIndex(2)
@@ -2753,7 +3426,7 @@ class MainWindow(QMainWindow):
         self._mic_cal_name    = ''     # nombre del archivo cargado
         self._channel_cal: dict = {}   # {ch_number (1-based): {'freqs': np.array, 'db': np.array, 'name': str}}
         self._channel_spl_offset: dict = {}  # {ch (1-based): float dB offset (dBFS→dBSPL)}
-        self._target_curves: list = []   # list of dicts: {freqs, db, color, name}
+        self._target_curves: list = _make_builtin_target_curves()  # list[TargetCurve]
         self._show_ch2        = True   # mostrar 2do canal en gráficas
         self._show_avg        = True   # mostrar promedio
 
@@ -2781,15 +3454,20 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self._refresh)
 
         self._set_stopped()
-        # Vista inicial: Transfer Function (IR + Magnitude + Phase)
-        self._on_view_mode_changed('Full')
+        self._on_view_mode_changed('Magnitude')
 
     # ── Central widget ────────────────────────────────────────────────
 
     def _build_central(self):
         central = QWidget()
         self.setCentralWidget(central)
-        root = QHBoxLayout(central)
+        # Outer layout: workspace tab bar spans full width at the very top,
+        # then the three-column layout (left panel + center + right panel) below
+        self._central_outer = QVBoxLayout(central)
+        self._central_outer.setContentsMargins(0, 0, 0, 0)
+        self._central_outer.setSpacing(0)
+        _inner_container = QWidget()
+        root = QHBoxLayout(_inner_container)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
@@ -2813,21 +3491,34 @@ class MainWindow(QMainWindow):
         self.canvas_spec.on_config_clicked = self._on_toggle_settings
 
         # Botón de suavizado del canvas TF → sync con cmb_smooth del panel
-        self.canvas_meas.on_smooth_changed = self._set_smooth_fraction
+        self.canvas_meas.on_smooth_changed  = self._set_smooth_fraction
+        # Panel labels inside canvas open the view-switcher dropdown
+        self.canvas_meas.on_panel_menu      = self._show_panel_menu_from_canvas
+        # Corner buttons — gear opens Graph Settings, X/+ toggles panels
+        self.canvas_meas.on_gear_clicked       = lambda: self._show_graph_settings_dialog(start_tab=1)
+        self.canvas_meas.on_close_mag_panel    = self._panel_close_mag
+        self.canvas_meas.on_close_ph_panel     = self._panel_close_ph
+        self.canvas_meas.on_toggle_ir          = self._toggle_ir_panel
+        self.canvas_meas.on_panel1_changed     = lambda t: self._set_panel_type(0, t)
+        self.canvas_meas.on_panel2_changed     = lambda t: self._set_panel_type(1, t)
+        self.canvas_meas.on_ir_peak_detected   = self._on_ir_peak_detected
+        self.canvas_meas.on_engine_select_menu = self._show_engine_select_menu
         self.canvas_sgram = SpectrogramCanvas()    # Spectrogram
 
         self._current_view = 'magnitude'   # 'magnitude'|'phase'|'spectrum'|'spectrograph'
+        self._panel1_type  = 'magnitude'   # type shown in slot 0 (top)
+        self._panel2_type  = 'phase'       # type shown in slot 1 (bottom)
         self._secondary_panel: 'SecondaryPanel | None' = None
 
         # Dropdown — mismas opciones en los 3 wrappers
-        _OPTS = ['Magnitude', 'Phase', 'Spectrum', 'Spectrograph']
+        _OPTS = ['Magnitude', 'Phase', 'RTA', 'Spectrograph']
 
         self._wrap_meas  = CanvasOverlay(self.canvas_meas,  _OPTS, 'Magnitude',
                                          self._on_view_mode_changed,
                                          self._show_measurement_config,
                                          on_add=self._on_add_panel,
                                          on_focus=lambda: self._on_focus_canvas('magnitude'))
-        self._wrap_spec  = CanvasOverlay(self.canvas_spec,  _OPTS, 'Spectrum',
+        self._wrap_spec  = CanvasOverlay(self.canvas_spec,  _OPTS, 'RTA',
                                          self._on_view_mode_changed,
                                          self._show_measurement_config,
                                          on_add=self._on_add_panel,
@@ -2838,18 +3529,22 @@ class MainWindow(QMainWindow):
                                          on_add=self._on_add_panel,
                                          on_focus=lambda: self._on_focus_canvas('spectrum'))
 
-        # Solo Magnitude visible al inicio
-        self._wrap_spec.setVisible(False)
-        self._wrap_sgram.setVisible(False)
+        # MeasurementCanvas tiene labels propios dentro — ocultar la barra superior
+        self._wrap_meas._btn.setVisible(False)
+        self._wrap_meas._gear.setVisible(False)
+        # Quitar el "+" exterior de TODOS los wrappers (ahora vive dentro de cada panel)
+        self._wrap_meas._btn_add.setVisible(False)
+        self._wrap_spec._btn_add.setVisible(False)
+        self._wrap_sgram._btn_add.setVisible(False)
 
-        # Slot principal (3 wraps apilados, uno visible a la vez)
-        self._main_area = QWidget()
-        ma_lay = QVBoxLayout(self._main_area)
-        ma_lay.setContentsMargins(0, 0, 0, 0)
-        ma_lay.setSpacing(0)
-        ma_lay.addWidget(self._wrap_meas,  stretch=1)
-        ma_lay.addWidget(self._wrap_spec,  stretch=1)
-        ma_lay.addWidget(self._wrap_sgram, stretch=1)
+        # Slot principal — QStackedWidget garantiza que solo el widget activo
+        # ocupa el 100% del espacio disponible (sin espacio residual para los ocultos)
+        from PyQt6.QtWidgets import QStackedWidget
+        self._main_area = QStackedWidget()
+        self._main_area.addWidget(self._wrap_meas)
+        self._main_area.addWidget(self._wrap_spec)
+        self._main_area.addWidget(self._wrap_sgram)
+        self._main_area.setCurrentWidget(self._wrap_meas)
 
         # Splitter vertical — soporta 1 o 2 paneles
         self._panel_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -2860,54 +3555,69 @@ class MainWindow(QMainWindow):
         self._panel_splitter.addWidget(self._main_area)
 
         # ── Workspace tab bar ─────────────────────────────────────────────
+        # ── Workspace tab bar — full-width at the very top of the window ──
         _ws_row = QWidget()
-        self._ws_row = _ws_row    # referencia para toggle Tab Bar
-        _ws_row.setFixedHeight(28)
-        _ws_row.setStyleSheet('background:#0d0d0d;')
+        self._ws_row = _ws_row
+        _ws_row.setFixedHeight(30)
+        _ws_row.setStyleSheet(
+            'background:#111111; border-bottom:1px solid #222222;')
         _ws_lay = QHBoxLayout(_ws_row)
-        _ws_lay.setContentsMargins(4, 2, 4, 0)
+        _ws_lay.setContentsMargins(6, 0, 6, 0)
         _ws_lay.setSpacing(0)
 
         self._ws_tab_bar = QTabBar()
         self._ws_tab_bar.setExpanding(False)
         self._ws_tab_bar.setTabsClosable(True)
-        self._ws_tab_bar.setMovable(False)
+        self._ws_tab_bar.setMovable(True)
         self._ws_tab_bar.setStyleSheet(
+            'QTabBar{'
+            '  background:#111111;'
+            '}'
             'QTabBar::tab{'
-            '  background:#161616; color:#5a7a5a;'
-            '  border:1px solid #2a2a2a; border-bottom:none;'
-            '  padding:3px 10px; margin-right:2px; min-width:70px;'
-            '  font-size:11px;'
+            '  background:#111111; color:#666666;'
+            '  border:none; border-right:1px solid #222222;'
+            '  padding:0px 18px 0px 14px; margin:0; min-width:90px;'
+            '  height:30px;'
+            '  font-size:12px; font-weight:normal;'
             '}'
             'QTabBar::tab:selected{'
-            '  background:#1a2a1a; color:#3cf53c; border-color:#3a4a3a;'
+            '  background:#1c1c1c; color:#e2e2e2;'
+            '  border-bottom:2px solid #4aaa6a;'
             '}'
-            'QTabBar::tab:hover:!selected{background:#1a1a1a; color:#8a9a8a;}'
-            'QTabBar{background:#0d0d0d;}'
-            'QTabBar::close-button{image:none;}'
+            'QTabBar::tab:hover:!selected{'
+            '  background:#171717; color:#aaaaaa;'
+            '}'
+            'QTabBar::close-button{'
+            '  subcontrol-position:right; subcontrol-origin:padding;'
+            '  width:10px; height:10px; margin-right:2px;'
+            '}'
         )
         self._ws_tab_bar.tabCloseRequested.connect(self._ws_close_tab)
         self._ws_tab_bar.currentChanged.connect(self._ws_on_tab_changed)
         self._ws_tab_bar.mouseDoubleClickEvent = self._ws_rename_tab_evt
 
-        _ws_add_btn = QPushButton('＋')
-        _ws_add_btn.setFixedSize(24, 22)
+        _ws_add_btn = QPushButton('+')
+        _ws_add_btn.setFixedSize(26, 26)
+        _ws_add_btn.setToolTip('New session tab')
         _ws_add_btn.setStyleSheet(
-            'QPushButton{background:#161616;color:#5a7a5a;border:1px solid #2a2a2a;'
-            'border-radius:2px;font-size:14px;padding:0;}'
-            'QPushButton:hover{background:#1e2e1e;color:#3cf53c;}'
+            'QPushButton{background:transparent;color:#555555;border:none;'
+            'font-size:18px;font-weight:normal;padding:0;}'
+            'QPushButton:hover{color:#e2e2e2;background:#1c1c1c;border-radius:3px;}'
         )
         _ws_add_btn.clicked.connect(self._ws_add_new)
 
         _ws_lay.addWidget(self._ws_tab_bar, stretch=1)
         _ws_lay.addWidget(_ws_add_btn)
 
-        # _ws_row se agrega al tope del panel derecho (ver _build_settings)
         cv.addWidget(self._panel_splitter, stretch=1)
         root.addWidget(center, stretch=1)
 
         # ── Derecha: panel settings ──
         root.addWidget(self._build_collapsible_settings())
+
+        # ── Assemble outer layout: tab bar at very top, then content ──
+        self._central_outer.addWidget(self._ws_row)
+        self._central_outer.addWidget(_inner_container, stretch=1)
 
         # Compat tabs
         class _FakeTabs:
@@ -3260,12 +3970,6 @@ class MainWindow(QMainWindow):
         ov.setContentsMargins(0, 0, 0, 0)
         ov.setSpacing(0)
 
-        # ── Workspace tabs (tope del panel derecho) ───────────────────
-        if hasattr(self, '_ws_row'):
-            self._ws_row.setStyleSheet(
-                f'background:{BG_SETTINGS};border-bottom:1px solid {BORDER};')
-            ov.addWidget(self._ws_row)
-
         # ── SPL fijo arriba ───────────────────────────────────────────
         spl_container = QWidget()
         spl_container.setStyleSheet(f'background:{BG_SETTINGS};')
@@ -3446,18 +4150,18 @@ class MainWindow(QMainWindow):
 
         # Lista de presets
         _PRESETS = [
-            ('S', 'Spectrum',             lambda: self._on_view_mode_changed('Spectrum')),
-            ('T', 'Transfer Function',    lambda: self._on_view_mode_changed('Full')),
+            ('S', 'RTA',                  lambda: self._on_view_mode_changed('RTA')),
+            ('T', 'Transfer Function',    lambda: self._on_view_mode_changed('Magnitude')),
             ('1', 'Spectrograph',         lambda: self._on_view_mode_changed('Spectrograph')),
             ('2', 'Magnitude / Phase',    lambda: self._on_view_mode_changed('Phase')),
-            ('3', 'RTA / RTA',            lambda: self._on_view_mode_changed('Spectrum')),
+            ('3', 'RTA / RTA',            lambda: self._on_view_mode_changed('RTA')),
             ('4', 'RTA / Spectrograph',   lambda: self._on_view_mode_changed('Spectrograph')),
             ('5', 'Magnitude / Magnitude',lambda: self._on_view_mode_changed('Magnitude')),
             ('6', 'Magnitude / Phase',    lambda: self._on_view_mode_changed('Phase')),
             ('7', 'IR Log',               lambda: self._on_view_mode_changed('Magnitude')),
             ('8', 'TF Only',              lambda: self._on_view_mode_changed('Magnitude')),
             ('9', '- Empty -',            None),
-            ('0', 'Multi-Spectrum',       lambda: self._on_view_mode_changed('Spectrum')),
+            ('0', 'Multi-RTA',            lambda: self._on_view_mode_changed('RTA')),
         ]
 
         for key, name, action in _PRESETS:
@@ -4051,7 +4755,7 @@ class MainWindow(QMainWindow):
 
         # ── Sección Spectrum ──────────────────────────────────────────
         sec_sp = QTreeWidgetItem(tree)
-        sec_sp.setText(0, 'Spectrum')
+        sec_sp.setText(0, 'RTA')
         sec_sp.setExpanded(True)
         sec_sp.setFlags(sec_sp.flags() & ~Qt.ItemFlag.ItemIsSelectable)
         sec_sp.setForeground(0, QColor(TEXT_DIM))
@@ -4263,7 +4967,7 @@ class MainWindow(QMainWindow):
                           if str(dev_id) in self.cmb_dev_in.itemText(i)), 0))
 
             color = ENGINE_PALETTE[len(self._tf_engines) % len(ENGINE_PALETTE)]
-            eng = self._add_tf_engine(ch_m=ch_m, ch_r=ch_r, color=color)
+            eng = self._add_tf_engine(ch_m=ch_m, ch_r=ch_r, color=color, name=name)
             self._select_engine(len(self._tf_engines) - 1)
             self._on_channels()
 
@@ -4273,7 +4977,7 @@ class MainWindow(QMainWindow):
     # ── Gestión dinámica de TF engines ───────────────────────────────
 
     def _add_tf_engine(self, ch_m: int = None, ch_r: int = 4,
-                       color: str = None) -> 'TFEngine':
+                       color: str = None, name: str = '') -> 'TFEngine':
         idx   = len(self._tf_engines)
         color = color or ENGINE_PALETTE[idx % len(ENGINE_PALETTE)]
         ch_m  = ch_m if ch_m is not None else (idx + 1)
@@ -4290,7 +4994,7 @@ class MainWindow(QMainWindow):
         eng = TFEngine(idx + 1, color, _on_ch, _on_rm, _on_fd,
                        on_select=_on_sel, on_normalize=_on_nrm,
                        on_active_changed=_on_act, on_color_changed=_on_col,
-                       parent=None)
+                       name=name, parent=None)
         eng.spn_m.setValue(ch_m)
         eng.spn_r.setValue(ch_r)
 
@@ -4337,8 +5041,8 @@ class MainWindow(QMainWindow):
         return eng
 
     def _remove_tf_engine(self, idx: int):
-        if len(self._tf_engines) <= 1:
-            return   # siempre queda al menos 1
+        if idx < 0 or idx >= len(self._tf_engines):
+            return
         eng = self._tf_engines.pop(idx)
         self._engines_layout.removeWidget(eng)
         eng.setParent(None)
@@ -4408,7 +5112,7 @@ class MainWindow(QMainWindow):
 
     def _remove_spectrum_engine(self, idx: int):
         """Elimina el Spectrum Engine en posición idx."""
-        if len(self._sp_engines) <= 1:
+        if idx < 0 or idx >= len(self._sp_engines):
             return
         self._sp_engines.pop(idx)
         self.canvas_spec.remove_sp_engine_line(idx)
@@ -5082,7 +5786,7 @@ class MainWindow(QMainWindow):
         def rl(t): return lbl(t, color=TEXT_MID, size=9)
 
         # ── Header discreto ──────────────────────────────────────────
-        h_lbl = QLabel('Spectrum')
+        h_lbl = QLabel('RTA')
         h_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         h_lbl.setStyleSheet(
             f'color:{TEXT_MID};font-size:9px;letter-spacing:2px;'
@@ -5260,56 +5964,273 @@ class MainWindow(QMainWindow):
         pass
 
     def _toggle_ir_panel(self, *args):
-        """
-        Cmd+I — muestra/oculta el panel IR.
-        Cuando se oculta: ax_tf y ax_coh se expanden hacia arriba para llenar
-        el espacio liberado. El IR siempre tiene el mismo tamaño fijo cuando
-        está visible — nunca se reescala.
-        """
-        self._ir_visible = not self._ir_visible
-        canvas = self.canvas_meas
-        canvas._ir_visible = self._ir_visible
-
-        if self._ir_visible:
-            # Restaurar posiciones previas de TF/Coh (guardadas al ocultarlo)
-            if hasattr(self, '_ir_hide_saved'):
-                s = self._ir_hide_saved
-                canvas.ax_tf.set_position(s['tf'])
-                canvas.ax_coh.set_position(s['coh'])
-                canvas.ax_ph.set_position(s['ph'])
-            canvas.ax_ir.set_visible(True)
-
-        else:
-            # Guardar posiciones actuales antes de expandir
-            self._ir_hide_saved = {
-                'tf':  list(canvas.ax_tf.get_position().bounds),
-                'coh': list(canvas.ax_coh.get_position().bounds),
-                'ph':  list(canvas.ax_ph.get_position().bounds),
-            }
-            canvas.ax_ir.set_visible(False)
-
-            ir_l, ir_b, ir_w, ir_h = canvas.ax_ir.get_position().bounds
-            tf_l, tf_b, tf_w, tf_h = canvas.ax_tf.get_position().bounds
-            ph_l, ph_b, ph_w, ph_h = canvas.ax_ph.get_position().bounds
-
-            new_tf_h = (ir_b + ir_h) - tf_b
-            canvas.ax_tf.set_position([tf_l, tf_b, tf_w, new_tf_h])
-            canvas.ax_coh.set_position([tf_l, tf_b, tf_w, new_tf_h])
-
-            if canvas.ax_ph.get_visible():
-                new_ph_h = (ir_b + ir_h) - ph_b
-                canvas.ax_ph.set_position([ph_l, ph_b, ph_w, new_ph_h])
-
-        canvas.draw_idle()
+        """Cmd+I — toggle IR independientemente del layout Magnitude/Phase."""
+        canvas  = self.canvas_meas
+        current = getattr(canvas, '_current_view_mode', 'tf_phase')
+        # Map every mode to its IR-toggled counterpart
+        _toggle_map = {
+            'tf_phase':       'tf_phase_ir',
+            'tf_phase_ir':    'tf_phase',
+            'magnitude_only': 'magnitude_ir',
+            'magnitude_ir':   'magnitude_only',
+            'phase_only':     'phase_ir',
+            'phase_ir':       'phase_only',
+        }
+        target = _toggle_map.get(current)
+        if target:
+            canvas.set_view_mode(target)
+            self._ir_visible = canvas._ir_visible
+        if hasattr(self, '_act_live_ir'):
+            self._act_live_ir.setChecked(self._ir_visible)
 
         if hasattr(self, '_act_live_ir'):
             self._act_live_ir.setChecked(self._ir_visible)
+
+    def _show_panel_menu_from_canvas(self, name: str):
+        """Global view switch triggered from inside-panel dropdown."""
+        self._on_view_mode_changed(name)
+
+    # ── Corner X/+ panel toggle callbacks ─────────────────────────────
+
+    def _panel_close_mag(self):
+        """✕ or ＋ on Magnitude corner — NEVER touches IR."""
+        mode = getattr(self.canvas_meas, '_current_view_mode', 'tf_phase')
+        ir   = getattr(self.canvas_meas, '_ir_visible', False)
+        if mode in ('tf_phase', 'tf_phase_ir'):
+            # ✕ → remove Magnitude, keep Phase (IR state preserved)
+            self.canvas_meas.set_view_mode('phase_ir' if ir else 'phase_only')
+        elif mode in ('magnitude_only', 'magnitude_ir'):
+            # ＋ → add Phase back (IR state preserved)
+            self.canvas_meas.set_view_mode('tf_phase_ir' if ir else 'tf_phase')
+
+    def _panel_close_ph(self):
+        """✕ or ＋ on Phase corner — NEVER touches IR."""
+        mode = getattr(self.canvas_meas, '_current_view_mode', 'tf_phase')
+        ir   = getattr(self.canvas_meas, '_ir_visible', False)
+        if mode in ('tf_phase', 'tf_phase_ir'):
+            # ✕ → remove Phase, keep Magnitude (IR state preserved)
+            self.canvas_meas.set_view_mode('magnitude_ir' if ir else 'magnitude_only')
+        elif mode in ('phase_only', 'phase_ir'):
+            # ＋ → add Magnitude back (IR state preserved)
+            self.canvas_meas.set_view_mode('tf_phase_ir' if ir else 'tf_phase')
+
+    # ── Two-slot panel layout ──────────────────────────────────────────
+
+    def _set_panel_type(self, slot: int, canvas_type: str):
+        """Change what's shown in panel slot 0 (top) or 1 (bottom)."""
+        if slot == 0:
+            self._panel1_type = canvas_type.lower()
+        else:
+            self._panel2_type = canvas_type.lower()
+        self._configure_panels()
+
+    def _configure_panels(self):
+        """
+        Reconfigure the visual layout based on _panel1_type and _panel2_type.
+
+        MeasurementCanvas handles Magnitude+Phase internally (2 subplots).
+        SpectrumCanvas handles RTA. SpectrogramCanvas handles Spectrograph.
+
+        When both slots use TF content (magnitude/phase): single MeasurementCanvas
+        with appropriate view mode, no QSplitter needed.
+        When slots have different canvas types: reparent wraps into two QSplitter slots.
+        """
+        p1 = self._panel1_type
+        p2 = self._panel2_type
+
+        _wrap_for = {
+            'magnitude':    self._wrap_meas,
+            'phase':        self._wrap_meas,
+            'rta':          self._wrap_spec,
+            'spectrograph': self._wrap_sgram,
+        }
+        wrap1 = _wrap_for.get(p1)
+        wrap2 = _wrap_for.get(p2)
+
+        if wrap1 is wrap2:
+            # Same underlying canvas for both slots → single canvas, internal subplots
+            self._ensure_in_main_area(wrap1)
+            self._hide_slot2_area()
+            if wrap1 is self._wrap_meas:
+                ir = getattr(self.canvas_meas, '_ir_visible', False)
+                if p1 == 'magnitude' and p2 == 'magnitude':
+                    # Both slots want magnitude → dual-magnitude internal mode
+                    self.canvas_meas.set_view_mode('magnitude_magnitude')
+                elif p1 == 'magnitude' and p2 == 'phase':
+                    self.canvas_meas.set_view_mode('tf_phase_ir' if ir else 'tf_phase')
+                elif p1 == 'phase' and p2 == 'magnitude':
+                    self.canvas_meas.set_view_mode('tf_phase_ir' if ir else 'tf_phase')
+                elif p1 == 'phase' and p2 == 'phase':
+                    # Both slots want phase → show phase_only (can't duplicate phase easily)
+                    self.canvas_meas.set_view_mode('phase_ir' if ir else 'phase_only')
+                elif p1 == 'magnitude':
+                    self.canvas_meas.set_view_mode('magnitude_ir' if ir else 'magnitude_only')
+                elif p1 == 'phase':
+                    self.canvas_meas.set_view_mode('phase_ir' if ir else 'phase_only')
+            # For rta+rta or spectrograph+spectrograph: just show the canvas full screen
+
+        elif wrap1 is not None and wrap2 is not None and wrap1 is not wrap2:
+            # Different canvas types: slot1 in _main_area, slot2 in _slot2_area
+            self._ensure_in_main_area(wrap1)
+            self._ensure_in_slot2_area(wrap2)
+            # Set MeasurementCanvas mode for whichever slot uses it
+            ir = getattr(self.canvas_meas, '_ir_visible', False)
+            if wrap1 is self._wrap_meas:
+                mode_map = {'magnitude': 'magnitude_ir' if ir else 'magnitude_only',
+                            'phase':     'phase_ir'     if ir else 'phase_only'}
+                self.canvas_meas.set_view_mode(mode_map.get(p1, 'magnitude_only'))
+            elif wrap2 is self._wrap_meas:
+                mode_map = {'magnitude': 'magnitude_ir' if ir else 'magnitude_only',
+                            'phase':     'phase_ir'     if ir else 'phase_only'}
+                self.canvas_meas.set_view_mode(mode_map.get(p2, 'phase_only'))
+
+        elif wrap1 is not None:
+            # Only slot1
+            self._ensure_in_main_area(wrap1)
+            self._hide_slot2_area()
+            if wrap1 is self._wrap_meas:
+                ir = getattr(self.canvas_meas, '_ir_visible', False)
+                m = {'magnitude': 'magnitude_ir' if ir else 'magnitude_only',
+                     'phase':     'phase_ir'     if ir else 'phase_only'}
+                self.canvas_meas.set_view_mode(m.get(p1, 'magnitude_only'))
+
+        # Sync slot types to canvas_meas so menus show correct checkmarks
+        self.canvas_meas._slot1_type = self._panel1_type
+        self.canvas_meas._slot2_type = self._panel2_type or 'phase'
+        # Update panel label text on MeasurementCanvas panels
+        self._update_panel_labels_from_types()
+
+    def _ensure_in_main_area(self, wrap):
+        """Move wrap to _main_area (QStackedWidget) if not already there, show it.
+        Also routes the wrap's dropdown to call _set_panel_type(0, ...) for slot1."""
+        if self._main_area.indexOf(wrap) == -1:
+            self._main_area.addWidget(wrap)
+        self._main_area.setCurrentWidget(wrap)
+        # Route slot1 dropdown: non-meas canvases need their _on_select updated
+        # _wrap_meas uses internal _mag_lbl which already routes to on_panel1_changed
+        if wrap is self._wrap_spec:
+            wrap._btn.setText('RTA ▾')
+            wrap._btn.setVisible(True)
+            wrap._on_select = lambda n: self._set_panel_type(0, n.lower())
+        elif wrap is self._wrap_sgram:
+            wrap._btn.setText('Spectrograph ▾')
+            wrap._btn.setVisible(True)
+            wrap._on_select = lambda n: self._set_panel_type(0, n.lower())
+        elif wrap is self._wrap_meas:
+            wrap._btn.setVisible(False)   # meas uses internal _mag_lbl overlay
+
+    def _ensure_in_slot2_area(self, wrap):
+        """Move wrap to _slot2_area (create it if needed), show it."""
+        if not hasattr(self, '_slot2_area'):
+            from PyQt6.QtWidgets import QVBoxLayout as _VBL
+            self._slot2_area = QWidget()
+            _lay = _VBL(self._slot2_area)
+            _lay.setContentsMargins(0, 0, 0, 0)
+            _lay.setSpacing(0)
+            self._panel_splitter.addWidget(self._slot2_area)
+            self._panel_splitter.setStretchFactor(0, 1)
+            self._panel_splitter.setStretchFactor(1, 1)
+
+        all_wraps = (self._wrap_meas, self._wrap_spec, self._wrap_sgram)
+        if wrap.parent() is not self._slot2_area:
+            self._slot2_area.layout().addWidget(wrap)
+        for w in all_wraps:
+            if w.parent() is self._slot2_area:
+                w.setVisible(w is wrap)
+        self._slot2_area.setVisible(True)
+
+        # Corregir label Y callback del wrap en slot2
+        if wrap is self._wrap_spec:
+            wrap._btn.setText('RTA ▾')
+            wrap._btn.setVisible(True)
+            wrap._on_select = lambda n: self._set_panel_type(1, n.lower())
+        elif wrap is self._wrap_sgram:
+            wrap._btn.setText('Spectrograph ▾')
+            wrap._btn.setVisible(True)
+            wrap._on_select = lambda n: self._set_panel_type(1, n.lower())
+        elif wrap is self._wrap_meas:
+            wrap._btn.setVisible(False)   # meas usa _ph_lbl interno para slot2
+
+        # Split 50/50 — usar sum(sizes) para valores reales post-layout
+        from PyQt6.QtCore import QTimer as _QT
+        def _split():
+            sizes = self._panel_splitter.sizes()
+            total = sum(sizes) if sizes else self._panel_splitter.height()
+            if total > 0:
+                half = total // 2
+                self._panel_splitter.setSizes([half, total - half])
+        _QT.singleShot(50, _split)   # 50ms da tiempo al layout de calcularse
+
+    def _hide_slot2_area(self):
+        """Hide slot2 and return any wraps in it back to the main QStackedWidget."""
+        if not hasattr(self, '_slot2_area'):
+            return
+        all_wraps = (self._wrap_meas, self._wrap_spec, self._wrap_sgram)
+        for w in all_wraps:
+            if w.parent() is self._slot2_area:
+                # Re-add to the QStackedWidget (reparents automatically)
+                self._main_area.addWidget(w)
+        self._slot2_area.setVisible(False)
+
+    def _on_ir_peak_detected(self, delay_ms: float):
+        """Called on every refresh when the IR argmax is computed.
+        Updates the SELECTED engine card's delay label (display only — no compensation applied).
+        The value mirrors what is shown on the IR canvas."""
+        sel_idx = getattr(self, '_selected_engine_idx', 0)
+        if sel_idx < len(self._tf_engines):
+            self._tf_engines[sel_idx].show_detected_delay(delay_ms)
+
+    def _update_panel_labels_from_types(self):
+        """Update the panel label text based on current panel types."""
+        if hasattr(self.canvas_meas, '_mag_lbl'):
+            p1, p2 = self._panel1_type, self._panel2_type
+            lbl1 = 'RTA' if p1 == 'rta' else p1.capitalize()
+            lbl2 = 'RTA' if p2 == 'rta' else (p2.capitalize() if p2 else '')
+            if p1 in ('magnitude', 'phase'):
+                self.canvas_meas._mag_lbl.setText(f'{lbl1} ▾')
+            if p2 and p2 in ('magnitude', 'phase'):
+                self.canvas_meas._ph_lbl.setText(f'{lbl2} ▾')
+
+    def _show_engine_select_menu(self, anchor_widget):
+        """Dropdown to pick active engine — shown from top-right corner of panel."""
+        if not self._tf_engines:
+            return
+        _ss = (
+            f'QMenu{{background:#1a1a1a;color:#cccccc;border:1px solid #3a3a3a;'
+            'font-size:11px;padding:2px 0;}}'
+            f'QMenu::item{{padding:5px 20px 5px 10px;}}'
+            f'QMenu::item:selected{{background:#2a382a;color:#88cc88;}}'
+            f'QMenu::item:checked{{font-weight:bold;}}'
+        )
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu(self)
+        menu.setStyleSheet(_ss)
+        sel = getattr(self, '_selected_engine_idx', 0)
+        for i, eng in enumerate(self._tf_engines):
+            name = getattr(eng, 'name', None) or f'TF {eng._number}'
+            act  = menu.addAction(name)
+            act.setCheckable(True)
+            act.setChecked(i == sel)
+            act.triggered.connect(lambda checked, idx=i: self._select_engine(idx))
+        menu.exec(anchor_widget.mapToGlobal(anchor_widget.rect().bottomLeft()))
+
+    # ── Engine label update helper ─────────────────────────────────────
+
+    def _refresh_engine_label(self):
+        """Push the selected engine name to the canvas corner labels."""
+        idx = getattr(self, '_selected_engine_idx', 0)
+        if self._tf_engines and 0 <= idx < len(self._tf_engines):
+            eng  = self._tf_engines[idx]
+            name = getattr(eng, 'name', None) or f'TF {eng._number}'
+        else:
+            name = '—'
+        self.canvas_meas.update_engine_label(name)
 
     def _switch_to_tf(self):
         self._on_view_mode_changed('Magnitude')
 
     def _switch_to_spectrum(self):
-        self._on_view_mode_changed('Spectrum')
+        self._on_view_mode_changed('RTA')
 
     def _toggle_spec_panel(self):
         if self._current_view == 'magnitude':
@@ -5323,32 +6244,45 @@ class MainWindow(QMainWindow):
         """
         Cambia la vista principal y el panel de settings de la derecha.
 
-        Magnitude    → canvas_meas (IR + TF + Phase completo), settings TF (idx 0)
-        Phase        → canvas_meas solo Phase expandido,        settings TF (idx 0)
-        Spectrum     → canvas_spec (RTA),                       settings Spec (idx 1)
-        Spectrograph → canvas_sgram,                            settings Spec (idx 1)
+        Transfer Function → canvas_meas (IR + TF + Phase + Coh completo), settings TF (idx 0)
+        Magnitude         → canvas_meas solo TF + Coh (sin IR, sin Phase), settings TF (idx 0)
+        Phase             → canvas_meas solo Phase expandido,              settings TF (idx 0)
+        Spectrum          → canvas_spec (RTA),                             settings Spec (idx 1)
+        Spectrograph      → canvas_sgram,                                  settings Spec (idx 1)
         """
-        # Sincronizar el label del botón en todos los wraps al modo elegido
+        # Collapsar el layout de dos-slots (panel dropdowns) de vuelta a slot único
+        self._hide_slot2_area()
+        # Restaurar callbacks globales de spec/sgram (en vista global S/T usan _on_view_mode_changed)
+        self._wrap_spec._on_select  = self._on_view_mode_changed
+        self._wrap_sgram._on_select = self._on_view_mode_changed
+        # En vista global, ocultar _btn de spec/sgram NO — deben ser visibles para cambiar vista
+        self._wrap_spec._btn.setVisible(True)
+        self._wrap_sgram._btn.setVisible(True)
+        # Sincronizar _panel1/2_type con la nueva vista global
+        _type_map = {
+            'Magnitude':   ('magnitude', 'phase'),
+            'Phase':       ('phase',     None),
+            'RTA':         ('rta',       None),
+            'Spectrograph':('spectrograph', None),
+        }
+        _t = _type_map.get(mode, ('magnitude', 'phase'))
+        self._panel1_type = _t[0]
+        self._panel2_type = _t[1]
+
+        # Sincronizar _current en todos los wraps.
+        # NO cambiar el texto del _btn aquí — cada wrap mantiene su propio label
+        # (_wrap_spec siempre dice "RTA ▾", _wrap_sgram "Spectrograph ▾", etc.)
         for w in (self._wrap_meas, self._wrap_spec, self._wrap_sgram):
             w._current = mode
-            w._btn.setText(f'{mode} ▾')
-            w._btn.adjustSize()
-            w.setVisible(False)
 
-        if mode == 'Full':
-            self._wrap_meas.setVisible(True)
-            self.canvas_meas.set_view_mode('full')   # IR + TF + Phase completo
-            self._current_view = 'magnitude'
-            settings_idx = 0
-
-        elif mode == 'Magnitude':
-            self._wrap_meas.setVisible(True)
-            self.canvas_meas.set_view_mode('magnitude_only')   # IR + TF, sin Phase
+        if mode == 'Magnitude':
+            self._main_area.setCurrentWidget(self._wrap_meas)
+            self.canvas_meas.set_view_mode('tf_phase')   # TF + Phase + Coh (sin IR)
             self._current_view = 'magnitude'
             settings_idx = 0
 
         elif mode == 'Phase':
-            self._wrap_meas.setVisible(True)
+            self._main_area.setCurrentWidget(self._wrap_meas)
             self.canvas_meas.set_view_mode('phase_only')
             self._current_view = 'phase'
             settings_idx = 0
@@ -5361,23 +6295,26 @@ class MainWindow(QMainWindow):
             # draw() síncrono para asegurar que las trazas guardadas aparezcan
             self.canvas_meas.draw()
 
-        elif mode == 'Spectrum':
-            self._wrap_spec.setVisible(True)
-            self.canvas_meas.set_view_mode('magnitude_only')   # restaurar si venía de Phase
+        elif mode == 'RTA':
+            self._main_area.setCurrentWidget(self._wrap_spec)
+            self.canvas_meas.set_view_mode('tf_phase')   # restaurar TF+Phase si venía de Phase-only
             self._current_view = 'spectrum'
             settings_idx = 1
 
         elif mode == 'Spectrograph':
-            self._wrap_sgram.setVisible(True)
-            self.canvas_meas.set_view_mode('magnitude_only')
+            self._main_area.setCurrentWidget(self._wrap_sgram)
+            self.canvas_meas.set_view_mode('tf_phase')
             self._current_view = 'spectrograph'
             settings_idx = 1
 
         else:
-            self._wrap_meas.setVisible(True)
-            self.canvas_meas.set_view_mode('magnitude_only')
+            self._main_area.setCurrentWidget(self._wrap_meas)
+            self.canvas_meas.set_view_mode('tf_phase')   # default: TF + Phase
             self._current_view = 'magnitude'
             settings_idx = 0
+
+        # Reset panel labels después de cambio global de vista
+        self._update_panel_labels_from_types()
 
         if hasattr(self, '_settings_stack'):
             self._settings_stack.setCurrentIndex(settings_idx)
@@ -5421,6 +6358,15 @@ class MainWindow(QMainWindow):
         self._secondary_panel.canvas_spec.on_cursor_update  = self._update_cursor
         self._secondary_panel.canvas_meas.on_cursor_update  = self._update_cursor
         self._secondary_panel.canvas_sgram.on_cursor_update = self._update_cursor
+
+        # Replay any traces already saved before this panel was opened
+        cm2 = self._secondary_panel.canvas_meas
+        for tr in self._traces:
+            cm2.store_trace(
+                tr.freqs, tr.mag_db, tr.phase_deg, tr.gamma2, tr.ir,
+                tr.delay_ref_ms, tr.color, tr.coh_thresh
+            )
+
         # Add to splitter
         self._panel_splitter.addWidget(self._secondary_panel)
 
@@ -5476,7 +6422,7 @@ class MainWindow(QMainWindow):
             dlg = QDialog(self)
             dlg.setWindowTitle('TF Engine Config')
             dlg.setModal(True)
-            dlg.setMinimumWidth(300)
+            dlg.setMinimumWidth(400)
             dlg.setStyleSheet(self.styleSheet())
 
             lay = QVBoxLayout(dlg)
@@ -5494,6 +6440,9 @@ class MainWindow(QMainWindow):
             dev_row = QHBoxLayout()
             dev_row.addWidget(lbl('DEVICE  IN', color=TEXT_DIM, size=8))
             cmb_dev = QComboBox()
+            cmb_dev.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            cmb_dev.setMinimumWidth(220)
             for i in range(self.cmb_dev_in.count()):
                 cmb_dev.addItem(self.cmb_dev_in.itemText(i))
             cmb_dev.setCurrentIndex(self.cmb_dev_in.currentIndex())
@@ -5516,17 +6465,21 @@ class MainWindow(QMainWindow):
 
                 grid = QGridLayout()
                 grid.setContentsMargins(14, 0, 0, 0)
-                grid.setSpacing(5); grid.setColumnStretch(1, 1)
+                grid.setSpacing(6)
+                grid.setColumnStretch(0, 0)
+                grid.setColumnStretch(1, 1)
 
                 grid.addWidget(lbl('CH  MEAS', color=TEXT_MID, size=9), 0, 0)
                 spn_m = QSpinBox()
                 spn_m.setRange(1, 32); spn_m.setValue(eng.spn_m.value())
+                spn_m.setMinimumWidth(64); spn_m.setFixedHeight(24)
                 grid.addWidget(spn_m, 0, 1)
                 spn_m_list.append(spn_m)
 
                 grid.addWidget(lbl('CH  REF', color=TEXT_MID, size=9), 1, 0)
                 spn_r = QSpinBox()
                 spn_r.setRange(1, 32); spn_r.setValue(eng.spn_r.value())
+                spn_r.setMinimumWidth(64); spn_r.setFixedHeight(24)
                 grid.addWidget(spn_r, 1, 1)
                 spn_r_list.append(spn_r)
 
@@ -5597,264 +6550,315 @@ class MainWindow(QMainWindow):
         """Resetea el valor máximo del SPL."""
         self._spl_max_db = -200.0
         if hasattr(self, 'lbl_spl_max'):
-            self.lbl_spl_max.setText('Max  0.0')
+            self.lbl_spl_max.setText('Max  —')
 
     def _show_spl_settings(self):
-        from PyQt6.QtCore import QTimer as _QT
-        import numpy as _np_spl
-        import sounddevice as _sd_spl
+        """Redirect — replaced by the unified Amplitude Calibration dialog."""
+        self._show_spl_calibration_dialog()
 
+    def _show_spl_calibration_dialog(self):
+        """
+        SMAART-style Amplitude Calibration dialog.
+        Input Device / Input Channel selector, live VU bar, Calibrator Level, Calibrate / OK.
+        """
+        from PyQt6.QtCore import QTimer as _QT, QSize as _QSize
+        from PyQt6.QtGui  import QPainter, QColor, QLinearGradient, QFont as _QFont
+        from PyQt6.QtWidgets import QDoubleSpinBox, QSizePolicy
+        import numpy as _np_cal
+
+        # ── Custom VU scale (painted tick labels) ─────────────────────
+        class _VUScale(QWidget):
+            _MARKS  = [-90, -60, -48, -36, -24, -12, -9, -6]
+            _DB_MIN = -90.0
+            _DB_MAX =   0.0
+            def sizeHint(self): return _QSize(360, 16)
+            def paintEvent(self, _e):
+                p  = QPainter(self)
+                w  = self.width();  h = self.height()
+                rng = self._DB_MAX - self._DB_MIN
+                fn = _QFont(); fn.setPixelSize(9)
+                p.setFont(fn)
+                p.setPen(QColor('#888888'))
+                for db in self._MARKS:
+                    x = int((db - self._DB_MIN) / rng * w)
+                    p.drawText(x - 14, 0, 28, h,
+                               Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
+                               str(db))
+
+        # ── Custom VU bar (gradient fill + tick lines) ─────────────────
+        class _VUBar(QWidget):
+            _DB_MIN = -90.0
+            _DB_MAX =   0.0
+            def __init__(self):
+                super().__init__()
+                self._level = -90.0
+                self.setFixedHeight(22)
+                self.setMinimumWidth(260)
+            def set_level(self, db: float):
+                self._level = db; self.update()
+            def sizeHint(self): return _QSize(360, 22)
+            def paintEvent(self, _e):
+                p   = QPainter(self)
+                w, h = self.width(), self.height()
+                rng  = self._DB_MAX - self._DB_MIN
+                # background
+                p.fillRect(0, 0, w, h, QColor('#111111'))
+                # fill
+                frac   = max(0.0, min(1.0, (self._level - self._DB_MIN) / rng))
+                fill_w = int(frac * w)
+                if fill_w > 1:
+                    g = QLinearGradient(0, 0, w, 0)
+                    g.setColorAt(0.00, QColor('#0d500d'))
+                    g.setColorAt(0.60, QColor('#22cc22'))   # ≈ -36 dBFS
+                    g.setColorAt(0.86, QColor('#cccc00'))   # ≈ -12 dBFS
+                    g.setColorAt(0.93, QColor('#cc7700'))   # ≈  -6 dBFS
+                    g.setColorAt(1.00, QColor('#cc2222'))   #    0 dBFS
+                    p.fillRect(0, 2, fill_w, h - 4, g)
+                # tick lines
+                p.setPen(QColor('#2a2a2a'))
+                for db in [-60, -48, -36, -24, -12, -9, -6]:
+                    x = int((db - self._DB_MIN) / rng * w)
+                    p.drawLine(x, 1, x, h - 1)
+
+        # ── Dialog shell ───────────────────────────────────────────────
         dlg = QDialog(self)
-        dlg.setWindowTitle('SPL Meter Settings')
-        dlg.setFixedSize(320, 360)
-        dlg.setStyleSheet(self.styleSheet())
+        dlg.setWindowTitle('Amplitude Calibration')
+        dlg.setFixedSize(520, 430)
+        _ss = (
+            f'QDialog{{background:#1c1c1c;color:{TEXT_HI};font-size:11px;}}'
+            f'QLabel{{background:transparent;color:{TEXT_HI};}}'
+            f'QComboBox{{background:#2a2a2a;color:{TEXT_HI};border:1px solid #555;'
+            f'border-radius:3px;padding:4px 8px;font-size:11px;}}'
+            f'QComboBox::drop-down{{border:none;width:18px;}}'
+            f'QDoubleSpinBox{{background:#2a2a2a;color:{TEXT_HI};border:1px solid #555;'
+            f'border-radius:3px;padding:3px 6px;font-size:12px;}}'
+            f'QPushButton{{background:#2e2e2e;color:{TEXT_HI};border:1px solid #555;'
+            f'border-radius:4px;padding:6px 28px;font-size:11px;}}'
+            f'QPushButton:hover{{background:#3a3a3a;border-color:#888;}}'
+            f'QPushButton:disabled{{color:#444;border-color:#333;}}')
+        dlg.setStyleSheet(_ss)
+
         lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(22, 18, 22, 16)
+        lay.setSpacing(10)
 
+        # ── Input Device ──────────────────────────────────────────────
         form = QFormLayout(); form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        # ── Channel selector ──────────────────────────────────────────
-        cmb_ch = QComboBox()
-        all_devs = getattr(self, '_cached_all_devices', None) or []
-        sel_dev  = next((d for d in all_devs if d['id'] == self.engine.dev_in), None)
-        n_ch_spl = int(sel_dev['in']) if sel_dev else 8
-        for i in range(1, n_ch_spl + 1):
-            cmb_ch.addItem(f'Input {i}', i)
-        cur_ch = getattr(self.engine, 'ch_spl', 1)
-        cmb_ch.setCurrentIndex(max(0, cur_ch - 1))
-        form.addRow('SPL Channel:', cmb_ch)
+        cmb_device = QComboBox(); cmb_device.setMinimumWidth(240)
+        all_devs   = getattr(self, '_cached_all_devices', [])
+        input_devs = [d for d in all_devs if int(d.get('in', 0)) > 0]
+        for d in input_devs:
+            cmb_device.addItem(d['name'], d['id'])
+        for i, d in enumerate(input_devs):
+            if d['id'] == self.engine.dev_in:
+                cmb_device.setCurrentIndex(i); break
+        form.addRow('Input Device:', cmb_device)
 
-        # ── Live level bar ────────────────────────────────────────────
-        _pb_ss = (
-            'QProgressBar{background:#0a0a0a;border:1px solid #222;border-radius:3px;}'
-            'QProgressBar::chunk{background:qlineargradient('
-            'x1:0,y1:0,x2:1,y2:0,'
-            'stop:0 #1a6a1a,stop:0.6 #2aaa2a,stop:0.85 #aaaa00,stop:1 #aa2222);'
-            'border-radius:2px;}')
-        pb_level = QProgressBar()
-        pb_level.setRange(0, 100)
-        pb_level.setValue(0)
-        pb_level.setTextVisible(False)
-        pb_level.setFixedHeight(18)
-        pb_level.setStyleSheet(_pb_ss)
+        # ── Input Channel ─────────────────────────────────────────────
+        cmb_channel = QComboBox(); cmb_channel.setMinimumWidth(140)
 
-        lbl_db = QLabel('— dBFS')
-        lbl_db.setStyleSheet(f'color:{TEXT_MID};font-size:10px;background:transparent;')
+        def _fill_channels():
+            cmb_channel.clear()
+            dev_id   = cmb_device.currentData()
+            dev_info = next((d for d in all_devs if d['id'] == dev_id), None)
+            n_ch     = int(dev_info.get('in', 8)) if dev_info else 8
+            for i in range(n_ch):
+                cmb_channel.addItem(f'Input {i + 1}', i + 1)
+            ch_spl = getattr(self.engine, 'ch_spl', 1)
+            cmb_channel.setCurrentIndex(max(0, ch_spl - 1))
 
-        lvl_row = QHBoxLayout()
-        lvl_row.addWidget(pb_level, stretch=1)
-        lvl_row.addWidget(lbl_db)
-        form.addRow('Level:', lvl_row)
+        _fill_channels()
+        cmb_device.currentIndexChanged.connect(lambda _: _fill_channels())
+        form.addRow('Input Channel:', cmb_channel)
+        lay.addLayout(form)
 
-        # ── Calibrate ─────────────────────────────────────────────────
-        btn_cal = QPushButton('Calibrate 94 dB SPL…')
-        btn_cal.setMinimumHeight(28)
-        btn_cal.clicked.connect(self._show_spl_calibration_dialog)
-        form.addRow('', btn_cal)
+        # ── Separator ─────────────────────────────────────────────────
+        _sep = QFrame(); _sep.setFrameShape(QFrame.Shape.HLine)
+        _sep.setStyleSheet('color:#333;max-height:1px;')
+        lay.addWidget(_sep)
 
-        # ── Cal offset (manual) ───────────────────────────────────────
+        # ── VU meter row ──────────────────────────────────────────────
+        vu_form = QFormLayout(); vu_form.setSpacing(4)
+        vu_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        vu_container = QWidget()
+        vc = QVBoxLayout(vu_container); vc.setContentsMargins(0,0,0,0); vc.setSpacing(2)
+        vu_scale = _VUScale(); vc.addWidget(vu_scale)
+        vu_bar   = _VUBar();   vc.addWidget(vu_bar)
+        vu_form.addRow('Input Level:', vu_container)
+
+        # Numeric readout
+        rdout_row = QHBoxLayout(); rdout_row.setSpacing(6)
+        lbl_dbfs_val = QLabel('—')
+        lbl_dbfs_val.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_dbfs_val.setStyleSheet(
+            'background:#111;color:#eeeeee;border:1px solid #444;border-radius:3px;'
+            'padding:2px 6px;font-size:12px;font-family:Menlo,monospace;'
+            'min-width:72px;max-width:72px;')
+        rdout_row.addStretch()
+        rdout_row.addWidget(lbl_dbfs_val)
+        rdout_row.addWidget(QLabel('dBFS'))
+        rdout_row.addStretch()
+        vu_form.addRow('', rdout_row)
+        lay.addLayout(vu_form)
+
+        # ── Calibrator Level ──────────────────────────────────────────
+        cal_form = QFormLayout(); cal_form.setSpacing(8)
+        cal_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        spn_cal = QDoubleSpinBox()
+        spn_cal.setRange(60.0, 140.0); spn_cal.setDecimals(1)
+        spn_cal.setValue(94.0); spn_cal.setFixedWidth(82)
+        cal_row = QHBoxLayout(); cal_row.setSpacing(6)
+        cal_row.addWidget(spn_cal)
+        cal_row.addWidget(QLabel('dB')); cal_row.addStretch()
+        cal_form.addRow('Calibrator Level:', cal_row)
+        lay.addLayout(cal_form)
+
+        # ── Separator 2 ───────────────────────────────────────────────
+        _sep2 = QFrame(); _sep2.setFrameShape(QFrame.Shape.HLine)
+        _sep2.setStyleSheet('color:#333;max-height:1px;')
+        lay.addWidget(_sep2)
+
+        # ── SPL Meter settings ────────────────────────────────────────
+        spl_form = QFormLayout(); spl_form.setSpacing(8)
+        spl_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
         spn_offset = QDoubleSpinBox()
         spn_offset.setRange(-60.0, 60.0); spn_offset.setSingleStep(0.5)
         spn_offset.setDecimals(1); spn_offset.setSuffix(' dB')
-        spn_offset.setValue(self._spl_offset_db)
-        form.addRow('Cal. Offset:', spn_offset)
+        spn_offset.setValue(getattr(self, '_spl_offset_db', 0.0))
+        spn_offset.setFixedWidth(90)
+        spl_form.addRow('Cal. Offset:', spn_offset)
 
-        # ── Thresholds ────────────────────────────────────────────────
         spn_warn = QDoubleSpinBox()
         spn_warn.setRange(0.0, 160.0); spn_warn.setSingleStep(1.0)
         spn_warn.setDecimals(1); spn_warn.setSuffix(' dB')
-        spn_warn.setValue(self._spl_warn_db)
-        form.addRow('Warn Threshold:', spn_warn)
+        spn_warn.setValue(getattr(self, '_spl_warn_db', 100.0))
+        spn_warn.setFixedWidth(90)
+        spl_form.addRow('Warn Threshold:', spn_warn)
 
         spn_clip = QDoubleSpinBox()
         spn_clip.setRange(0.0, 160.0); spn_clip.setSingleStep(1.0)
         spn_clip.setDecimals(1); spn_clip.setSuffix(' dB')
-        spn_clip.setValue(self._spl_clip_db)
-        form.addRow('Clip Threshold:', spn_clip)
+        spn_clip.setValue(getattr(self, '_spl_clip_db', 118.0))
+        spn_clip.setFixedWidth(90)
+        spl_form.addRow('Clip Threshold:', spn_clip)
 
-        lay.addLayout(form)
+        lay.addLayout(spl_form)
+
+        # ── Status label ──────────────────────────────────────────────
+        lbl_status = QLabel('')
+        lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_status.setStyleSheet(f'color:{GREEN};font-size:10px;font-weight:bold;')
+        lay.addWidget(lbl_status)
         lay.addStretch()
 
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok |
-            QDialogButtonBox.StandardButton.Cancel)
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
-        lay.addWidget(btns)
+        # ── Bottom buttons ────────────────────────────────────────────
+        btn_row = QHBoxLayout(); btn_row.setSpacing(8)
+        btn_calibrate = QPushButton('Calibrate')
+        btn_ok        = QPushButton('OK')
+        btn_row.addWidget(btn_calibrate)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_ok)
+        lay.addLayout(btn_row)
 
-        # ── Live level stream ─────────────────────────────────────────
-        _meter_buf2 = [None]
-        _sd_stream2 = [None]
+        # ── Live meter (reads engine buffers — no new stream) ─────────
+        _live = _QT(dlg); _live.setInterval(80)
 
-        def _start_spl_stream(ch_idx):
-            if _sd_stream2[0] is not None:
-                try: _sd_stream2[0].stop(); _sd_stream2[0].close()
-                except Exception: pass
-            dev_id = self.engine.dev_in
+        def _read_ch_buf():
+            ch_1   = cmb_channel.currentData() or 1
+            ch_spl = getattr(self.engine, 'ch_spl', -1)
+            ch_ref = getattr(self.engine, 'ch_ref', -1)
             try:
-                info = _sd_spl.query_devices(dev_id, 'input')
-                n_phys = int(info['max_input_channels'])
-                n_read = min(ch_idx + 1, n_phys)
-                def _cb(indata, frames, t, s):
-                    if indata.shape[1] > ch_idx:
-                        _meter_buf2[0] = indata[:, ch_idx].copy()
-                st = _sd_spl.InputStream(
-                    device=dev_id, channels=n_read,
-                    samplerate=int(info['default_samplerate']),
-                    blocksize=512, callback=_cb, dtype='float32')
-                st.start()
-                _sd_stream2[0] = st
+                if ch_1 == ch_spl:
+                    return self.engine.get_buffer_spl()
+                if ch_1 == ch_ref:
+                    return self.engine.buf_ref.read(self.engine.nperseg)
+                for idx, mch in enumerate(getattr(self.engine, '_ch_meas_list', [])):
+                    if mch == ch_1:
+                        return self.engine.buf_meas_list[idx].read(self.engine.nperseg)
             except Exception:
                 pass
+            return None
 
-        _start_spl_stream(cmb_ch.currentIndex())
-
-        def _ch_changed(idx):
-            _start_spl_stream(idx)
-
-        cmb_ch.currentIndexChanged.connect(_ch_changed)
-
-        _mt2 = _QT(dlg)
-        _mt2.setInterval(80)
-
-        def _upd():
-            buf = _meter_buf2[0]
-            if buf is None:
+        def _upd_live():
+            if not self.engine.running:
+                vu_bar.set_level(-90.0); lbl_dbfs_val.setText('—'); return
+            buf = _read_ch_buf()
+            if buf is None or len(buf) == 0:
                 return
-            rms = float(_np_spl.sqrt(_np_spl.mean(buf.astype(float) ** 2)))
-            db  = 20.0 * _np_spl.log10(max(rms, 1e-10))
-            pct = int(max(0.0, min(100.0, (db + 60.0) * 100.0 / 60.0)))
-            pb_level.setValue(pct)
-            lbl_db.setText(f'{db:.1f} dBFS')
+            rms = float(_np_cal.sqrt(_np_cal.mean(buf.astype(float) ** 2)))
+            db  = 20.0 * _np_cal.log10(max(rms, 1e-10))
+            vu_bar.set_level(db)
+            lbl_dbfs_val.setText(f'{db:.1f}')
 
-        _mt2.timeout.connect(_upd)
-        _mt2.start()
+        _live.timeout.connect(_upd_live); _live.start()
+        dlg.finished.connect(_live.stop)
 
-        def _cleanup2():
-            _mt2.stop()
-            if _sd_stream2[0] is not None:
-                try: _sd_stream2[0].stop(); _sd_stream2[0].close()
-                except Exception: pass
+        # ── Calibrate action ──────────────────────────────────────────
+        _samples = []
 
-        dlg.finished.connect(_cleanup2)
+        def _do_calibrate():
+            if not self.engine.running:
+                lbl_status.setText('⚠  Start the audio engine first (▶)')
+                lbl_status.setStyleSheet('color:#ffaa44;font-size:10px;font-weight:bold;')
+                return
+            _samples.clear()
+            btn_calibrate.setEnabled(False)
+            lbl_status.setText('Measuring…  (2 s)')
+            lbl_status.setStyleSheet(f'color:{GREEN};font-size:10px;font-weight:bold;')
 
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            new_ch = cmb_ch.currentData()
-            if new_ch is not None:
-                self.engine.ch_spl = int(new_ch)
+            _ct = _QT(dlg); _ct.setInterval(100)
+            def _collect():
+                buf = _read_ch_buf()
+                if buf is not None and len(buf) > 0:
+                    rms = float(_np_cal.sqrt(_np_cal.mean(buf.astype(float) ** 2)))
+                    if rms > 1e-10:
+                        _samples.append(rms)
+            _ct.timeout.connect(_collect); _ct.start()
+
+            def _finish():
+                _ct.stop(); btn_calibrate.setEnabled(True)
+                if not _samples:
+                    lbl_status.setText('⚠  No signal — check engine and channel')
+                    lbl_status.setStyleSheet('color:#ff6644;font-size:10px;font-weight:bold;')
+                    return
+                avg_rms  = float(_np_cal.mean(_samples))
+                avg_dbfs = 20.0 * _np_cal.log10(max(avg_rms, 1e-10))
+                cal_spl  = spn_cal.value()
+                offset   = cal_spl - avg_dbfs
+                ch_1     = cmb_channel.currentData() or 1
+                self._channel_spl_offset[ch_1] = offset
+                self._spl_offset_db = offset
+                self._spl_max_db    = -200.0
+                if hasattr(self, 'lbl_spl_max'):
+                    self.lbl_spl_max.setText('Max  —')
+                lbl_status.setText(
+                    f'✓  {avg_dbfs:.1f} dBFS = {cal_spl:.1f} dB SPL   '
+                    f'(offset {offset:+.1f} dB)')
+                lbl_status.setStyleSheet(f'color:{GREEN};font-size:10px;font-weight:bold;')
+                self._save_prefs()
+                self.sb.showMessage(
+                    f'✓  Calibrated Ch {ch_1}: {avg_dbfs:.1f} dBFS = {cal_spl:.1f} dBSPL', 5000)
+
+            _QT.singleShot(2100, _finish)
+
+        def _on_ok():
+            # Save selected channel as the active SPL channel
+            ch_sel = cmb_channel.currentData()
+            if ch_sel is not None:
+                self.engine.ch_spl = int(ch_sel)
+            # Save manual offset and thresholds
             self._spl_offset_db = spn_offset.value()
             self._spl_warn_db   = spn_warn.value()
             self._spl_clip_db   = spn_clip.value()
             self._save_prefs()
+            dlg.accept()
 
-    def _show_spl_calibration_dialog(self):
-        """
-        SPL calibration: play a 94 dBSPL 1 kHz tone, measure RMS over 2 seconds,
-        compute and store the dBFS→dBSPL offset for the SPL channel.
-        """
-        from PyQt6.QtCore import QTimer as _QT
-        import numpy as np
-
-        ch = getattr(self.engine, 'ch_spl', 1)
-
-        dlg = QDialog(self)
-        dlg.setWindowTitle('SPL Calibration — 94 dB @ 1 kHz')
-        dlg.setFixedSize(400, 220)
-        dlg.setStyleSheet(
-            f'QDialog{{background:#1a1a1a;color:{TEXT_HI};font-size:11px;}}'
-            f'QLabel{{background:transparent;color:{TEXT_HI};}}'
-            f'QPushButton{{background:#2a2a2a;color:{TEXT_HI};border:1px solid #444;'
-            f'border-radius:4px;padding:5px 20px;font-size:11px;}}'
-            f'QPushButton:hover{{background:#333;}}')
-
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(20, 16, 20, 14)
-        lay.setSpacing(10)
-
-        lbl_inst = QLabel(
-            f'<b>Channel {ch} — SPL Calibration</b><br><br>'
-            'Place a <b>94 dBSPL reference source</b> (pistonphone / calibrator)<br>'
-            'at 1 kHz next to the measurement microphone,<br>'
-            'then click <b>Start Calibration</b>.')
-        lbl_inst.setWordWrap(True)
-        lbl_inst.setStyleSheet(f'color:{TEXT_MID};font-size:10px;background:transparent;')
-        lay.addWidget(lbl_inst)
-
-        lbl_status = QLabel('Ready.')
-        lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_status.setStyleSheet(f'color:{GREEN};font-size:12px;font-weight:bold;background:transparent;')
-        lay.addWidget(lbl_status)
-
-        lbl_result = QLabel('')
-        lbl_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_result.setStyleSheet(f'color:{TEXT_HI};font-size:11px;background:transparent;')
-        lay.addWidget(lbl_result)
-
-        btn_row = QHBoxLayout()
-        btn_start  = QPushButton('Start Calibration')
-        btn_close  = QPushButton('Close')
-        btn_row.addWidget(btn_start)
-        btn_row.addWidget(btn_close)
-        lay.addLayout(btn_row)
-
-        _samples = []
-        _timer   = [None]
-
-        def _collect():
-            try:
-                buf = self.engine.get_buffer_meas(ch - 1)
-                if buf is not None and len(buf) > 0:
-                    rms = float(np.sqrt(np.mean(buf.astype(float) ** 2)))
-                    if rms > 1e-10:
-                        _samples.append(rms)
-            except Exception:
-                pass
-
-        def _start_cal():
-            if not self.engine.running:
-                lbl_status.setText('⚠  Start the audio stream first (▶)')
-                lbl_status.setStyleSheet(f'color:#ffaa44;font-size:11px;font-weight:bold;background:transparent;')
-                return
-            _samples.clear()
-            btn_start.setEnabled(False)
-            lbl_status.setText('Measuring… (2 seconds)')
-            lbl_status.setStyleSheet(f'color:{GREEN};font-size:12px;font-weight:bold;background:transparent;')
-
-            # Collect 20 samples over 2 seconds
-            _collect_timer = _QT(dlg)
-            _collect_timer.setInterval(100)
-            _collect_timer.timeout.connect(_collect)
-            _collect_timer.start()
-            _timer[0] = _collect_timer
-
-            def _finish():
-                _collect_timer.stop()
-                if not _samples:
-                    lbl_status.setText('⚠  No signal detected. Check input device.')
-                    lbl_status.setStyleSheet(f'color:#ff6644;font-size:11px;font-weight:bold;background:transparent;')
-                    btn_start.setEnabled(True)
-                    return
-                avg_rms  = float(np.mean(_samples))
-                avg_dbfs = 20.0 * np.log10(avg_rms + 1e-12)
-                offset   = 94.0 - avg_dbfs
-                self._channel_spl_offset[ch] = offset
-                # Also update the legacy global offset for backward compat
-                self._spl_offset_db = offset
-                lbl_status.setText(f'✓  Calibrated!')
-                lbl_status.setStyleSheet(f'color:{GREEN};font-size:13px;font-weight:bold;background:transparent;')
-                lbl_result.setText(
-                    f'Measured: {avg_dbfs:.1f} dBFS  →  Offset: {offset:+.1f} dB  '
-                    f'(Ch {ch} = 94 dBSPL)')
-                btn_start.setEnabled(True)
-                self.sb.showMessage(
-                    f'✓  SPL cal Ch {ch}: {avg_dbfs:.1f} dBFS = 94.0 dBSPL  '
-                    f'(offset {offset:+.1f} dB)', 6000)
-
-            _QT.singleShot(2100, _finish)
-
-        btn_start.clicked.connect(_start_cal)
-        btn_close.clicked.connect(dlg.accept)
+        btn_calibrate.clicked.connect(_do_calibrate)
+        btn_ok.clicked.connect(_on_ok)
         dlg.exec()
 
     def _show_display_settings(self):
@@ -5942,6 +6946,8 @@ class MainWindow(QMainWindow):
             cm2 = self._secondary_panel.canvas_meas
             cm2.set_engine_colors(colors)
             cm2.highlight_engine(idx, show_avg=self._show_avg)
+        # Update engine name in panel corners
+        self._refresh_engine_label()
 
     def _on_engine_active_changed(self, idx: int, active: bool):
         """
@@ -6259,7 +7265,7 @@ class MainWindow(QMainWindow):
                                 if not path:
                                     return
                                 try:
-                                    data = _load_curve_file(path)
+                                    _, data = _load_curve_file(path)
                                     name = os.path.basename(path)
                                     _ch_cal_local[ch] = {'freqs': data[:, 0], 'db': data[:, 1], 'name': name}
                                     btn.setText(f'✓ {name}')
@@ -6277,48 +7283,38 @@ class MainWindow(QMainWindow):
                 _build_ch_table(n_ch)
                 pv.addWidget(ch_tbl)
 
-                # ── Live level meter: real sounddevice stream ──────────
+                # ── Live level meter: reads engine buffers (no extra stream) ──
+                # CoreAudio/WASAPI cannot open two InputStream on the same device.
+                # We read the already-captured buffers from the running engine.
                 import numpy as _np_io
-                import sounddevice as _sd_io
-
-                _meter_buf  = [None]   # shared mutable container
-                _meter_n_ch = [n_ch]
-
-                def _audio_cb(indata, frames, time_info, status):
-                    _meter_buf[0] = indata.copy()
-
-                _sd_stream = [None]
-
-                def _start_meter_stream():
-                    dev_id = _sel.get('in', self.engine.dev_in)
-                    try:
-                        info  = _sd_io.query_devices(dev_id, 'input')
-                        n_phys = int(info['max_input_channels'])
-                        _meter_n_ch[0] = min(n_ch, n_phys)
-                        st = _sd_io.InputStream(
-                            device=dev_id,
-                            channels=_meter_n_ch[0],
-                            samplerate=int(info['default_samplerate']),
-                            blocksize=512,
-                            callback=_audio_cb,
-                            dtype='float32')
-                        st.start()
-                        _sd_stream[0] = st
-                    except Exception:
-                        pass
-
-                _start_meter_stream()
 
                 _meter_timer = QTimer(dlg)
-                _meter_timer.setInterval(80)
+                _meter_timer.setInterval(100)
 
                 def _update_meters():
-                    buf = _meter_buf[0]
-                    if buf is None:
+                    if not self.engine.running:
                         return
+                    nperseg = self.engine.nperseg
+                    ch_spl  = getattr(self.engine, 'ch_spl',  -1)
+                    ch_ref  = getattr(self.engine, 'ch_ref',  -1)
+                    ch_meas = list(getattr(self.engine, '_ch_meas_list', []))
                     for ci, pb in enumerate(_level_bars):
-                        if ci < buf.shape[1]:
-                            rms = float(_np_io.sqrt(_np_io.mean(buf[:, ci].astype(float) ** 2)))
+                        ch_1 = ci + 1  # 1-indexed channel number
+                        buf  = None
+                        try:
+                            if ch_1 == ch_spl:
+                                buf = self.engine.buf_spl.read(nperseg)
+                            elif ch_1 == ch_ref:
+                                buf = self.engine.buf_ref.read(nperseg)
+                            else:
+                                for midx, mch in enumerate(ch_meas):
+                                    if mch == ch_1:
+                                        buf = self.engine.buf_meas_list[midx].read(nperseg)
+                                        break
+                        except Exception:
+                            pass
+                        if buf is not None and len(buf) > 0:
+                            rms = float(_np_io.sqrt(_np_io.mean(buf.astype(float) ** 2)))
                             db  = 20.0 * _np_io.log10(max(rms, 1e-10))
                             pct = int(max(0.0, min(100.0, (db + 60.0) * 100.0 / 60.0)))
                             pb.setValue(pct)
@@ -6327,12 +7323,6 @@ class MainWindow(QMainWindow):
 
                 def _cleanup():
                     _meter_timer.stop()
-                    if _sd_stream[0] is not None:
-                        try:
-                            _sd_stream[0].stop()
-                            _sd_stream[0].close()
-                        except Exception:
-                            pass
 
                 _meter_timer.timeout.connect(_update_meters)
                 _meter_timer.start()
@@ -6455,7 +7445,7 @@ class MainWindow(QMainWindow):
 
         cm.addAction('I-O Config…',                  self._show_io_config).setShortcut('Alt+A')
         cm.addAction('Measurement Config…',          self._show_measurement_config).setShortcut('Alt+G')
-        cm.addAction('SPL Config…',                  self._show_spl_settings).setShortcut('Ctrl+Shift+E')
+        cm.addAction('SPL Config…',                  self._show_spl_calibration_dialog).setShortcut('Ctrl+Shift+E')
         cm.addAction('Command Bar Config…',          self._show_command_bar_config)
         cm.addSeparator()
 
@@ -6493,7 +7483,7 @@ class MainWindow(QMainWindow):
         ms_menu.addAction('Find Delay  [D]',         self._on_find_delay)
         ms_menu.addAction('Reset Delay  [R]',        self._on_delay_reset)
         ms_menu.addSeparator()
-        ms_menu.addAction('SPL Config…',             self._show_spl_settings)
+        ms_menu.addAction('SPL Config…',             self._show_spl_calibration_dialog)
         ms_menu.addAction('Amplitude Calibration…',  self._show_amplitude_cal)
 
         om.addSeparator()
@@ -6538,7 +7528,7 @@ class MainWindow(QMainWindow):
         # ── View Presets (submenu) ────────────────────────────────────
         vp_menu = vm.addMenu('View Presets')
         vp_menu.addAction('Magnitude',  self._switch_to_tf)
-        vp_menu.addAction('Spectrum',   self._switch_to_spectrum)
+        vp_menu.addAction('RTA',        self._switch_to_spectrum)
         vm.addSeparator()
 
         # ── Windows / panels ──────────────────────────────────────────
@@ -6554,7 +7544,8 @@ class MainWindow(QMainWindow):
         vm.addSeparator()
 
         # ── Graph toggles ─────────────────────────────────────────────
-        self._act_live_ir = _QA('Live IR  [Cmd+I]', self, checkable=True, checked=True)
+        self._act_live_ir = _QA('Live IR  [Cmd+I]', self, checkable=True, checked=False)
+        self._act_live_ir.setShortcut('Ctrl+I')   # Ctrl = Cmd en macOS
         self._act_live_ir.triggered.connect(self._toggle_ir_panel)
         vm.addAction(self._act_live_ir)
 
@@ -6918,30 +7909,41 @@ class MainWindow(QMainWindow):
 
     def _on_noise_panel(self, checked):
         if checked and self.engine.dev_out < 0:
-            # Sin tarjeta de salida configurada → abrir I-O Config primero
-            self.sb.showMessage('⚠  Configura la tarjeta de audio en I-O Config antes de usar el generador', 5000)
+            self.sb.showMessage(
+                '⚠  Configure audio device in I-O Config before using the generator', 5000)
             for b in self._all_noise_btns:
                 b.setChecked(False)
             self._show_io_config()
             return
 
+        # Start engine first so has_output is set correctly
+        if checked and not self.engine.running:
+            try:
+                self.engine.start()
+            except Exception as exc:
+                self.sb.showMessage(f'⚠  Error opening stream: {exc}', 6000)
+                for b in self._all_noise_btns:
+                    b.setChecked(False)
+                return
+
+        # Check if stream actually has output capability
+        if checked and not getattr(self.engine, 'has_output', True):
+            QMessageBox.warning(
+                self, 'No Output Device',
+                'The audio engine is running in <b>input-only mode</b>.<br><br>'
+                'The signal generator needs an output device.<br>'
+                'Go to <b>Options → I-O Config</b> and select a valid output device,<br>'
+                'then restart the engine (▶).')
+            for b in self._all_noise_btns:
+                b.setChecked(False)
+            return
+
         self.engine.noise_on = checked
-        # Sincronizar estado en todos los botones de noise
+        # Sync state across all generator buttons
         for b in self._all_noise_btns:
             b.setChecked(checked)
-        if checked:
-            # El generador necesita stream abierto — lo abre solo si hace falta,
-            # sin iniciar la medición (timer queda detenido).
-            if not self.engine.running:
-                try:
-                    self.engine.start()
-                except Exception as exc:
-                    self.sb.showMessage(f'⚠  Error opening stream: {exc}', 6000)
-                    self.engine.noise_on = False
-                    for b in self._all_noise_btns:
-                        b.setChecked(False)
-        else:
-            # Generador apagado: si la medición también está parada, cerrar stream
+        if not checked:
+            # Generator off: close stream if measurement is also stopped
             if not self.timer.isActive():
                 self.engine.stop()
 
@@ -7100,7 +8102,7 @@ class MainWindow(QMainWindow):
             self.canvas_spec.update_sp_engine(eng['canvas_idx'], rtf.freqs, rtf.Gxx)
             # ── Panel secundario — Spectrum ───────────────────────────
             if (self._secondary_panel is not None and
-                    self._secondary_panel._current_view == 'Spectrum'):
+                    self._secondary_panel._current_view == 'RTA'):
                 sp2 = self._secondary_panel.canvas_spec
                 # Agregar líneas de engine al canvas secundario si faltan
                 while len(sp2._sp_eng_lines) <= eng['canvas_idx']:
@@ -7111,7 +8113,7 @@ class MainWindow(QMainWindow):
         if need_draw:
             self.canvas_spec.draw_idle()
             if (self._secondary_panel is not None and
-                    self._secondary_panel._current_view == 'Spectrum'):
+                    self._secondary_panel._current_view == 'RTA'):
                 self._secondary_panel.canvas_spec.draw_idle()
 
     def _refresh_spectrogram(self):
@@ -7166,21 +8168,34 @@ class MainWindow(QMainWindow):
         # Refrescar según la vista activa
         view = getattr(self, '_current_view', 'magnitude')
 
-        # Si el panel secundario está en Spectrum/Spectrograph, refrescarlo siempre
+        # ── Detectar qué canvases necesitan refresh ───────────────────
+        # Incluye: vista global (view) + panel dropdown slots + secondary panel
+        _need_spec  = (view == 'spectrum')
+        _need_sgram = (view == 'spectrograph')
+
+        # Panel dropdown (dos-slots): _panel1_type / _panel2_type
+        if getattr(self, '_panel1_type', None) == 'rta' \
+                or getattr(self, '_panel2_type', None) == 'rta':
+            _need_spec = True
+        if getattr(self, '_panel1_type', None) == 'spectrograph' \
+                or getattr(self, '_panel2_type', None) == 'spectrograph':
+            _need_sgram = True
+
+        # Panel secundario (ventana flotante)
         if self._secondary_panel is not None:
             sv = self._secondary_panel._current_view
-            if sv == 'Spectrum':
-                self._refresh_spectrum()
+            if sv == 'RTA':
+                _need_spec = True
             elif sv == 'Spectrograph':
-                self._refresh_spectrogram()
+                _need_sgram = True
 
-        if view == 'spectrum':
-            if self._secondary_panel is None or self._secondary_panel._current_view != 'Spectrum':
-                self._refresh_spectrum()
-            return
-        if view == 'spectrograph':
-            if self._secondary_panel is None or self._secondary_panel._current_view != 'Spectrograph':
-                self._refresh_spectrogram()
+        if _need_spec:
+            self._refresh_spectrum()
+        if _need_sgram:
+            self._refresh_spectrogram()
+
+        # Si la vista principal ES solo spectrum/spectrograph, no continuar con TF
+        if view == 'spectrum' or view == 'spectrograph':
             return
 
         # ── Transfer Function ─────────────────────────────────────────
@@ -7200,9 +8215,10 @@ class MainWindow(QMainWindow):
         thresh      = self.spn_thresh.value()
 
         # ── SPL meter (canal dedicado) ────────────────────────────────
+        _SPL_FONT = 'font-size:42px;font-weight:bold;background:transparent;letter-spacing:-1px;'
         if not self.engine.running:
             # Stream caído: resetear display
-            _dim = f'color:{TEXT_DIM};font-size:56px;font-weight:bold;background:transparent;'
+            _dim = f'color:{TEXT_DIM};{_SPL_FONT}'
             _bst = 'QProgressBar{background:#111;border:none;border-radius:3px;}QProgressBar::chunk{background:#333;border-radius:3px;}'
             for _lv, _br in zip(
                     getattr(self, '_spl_labels', [self.lbl_spl_val]),
@@ -7218,27 +8234,29 @@ class MainWindow(QMainWindow):
             _spl_cal = self._channel_spl_offset.get(_spl_ch, 0.0)
             spl_db = rms_spl_f + self._spl_offset_db + _spl_cal
 
-            if spl_db >= self._spl_clip_db:
+            # Clamp to physically plausible SPL range before display / max tracking
+            spl_db_clamped = max(-20.0, min(160.0, spl_db))
+
+            if spl_db_clamped >= self._spl_clip_db:
                 spl_color = '#ef5350'
-            elif spl_db >= self._spl_warn_db:
+            elif spl_db_clamped >= self._spl_warn_db:
                 spl_color = '#ffb74d'
             else:
                 spl_color = '#66bb6a'
 
-            bar_pct   = max(0, min(100, int((spl_db - 50) / 80.0 * 100)))
-            spl_style = (f'color:{spl_color};font-size:56px;font-weight:bold;'
-                         f'background:transparent;letter-spacing:-1px;')
+            bar_pct   = max(0, min(100, int((spl_db_clamped - 50) / 80.0 * 100)))
+            spl_style = f'color:{spl_color};{_SPL_FONT}'
             bar_style = (f'QProgressBar{{background:#111;border:none;border-radius:3px;}}'
                          f'QProgressBar::chunk{{background:{spl_color};border-radius:3px;}}')
-            # Actualizar max
-            if spl_db > getattr(self, '_spl_max_db', -200.0):
+            # Actualizar max — solo si el valor calibrado es razonable (offset OK)
+            if -20.0 <= spl_db <= 160.0 and spl_db > getattr(self, '_spl_max_db', -200.0):
                 self._spl_max_db = spl_db
                 if hasattr(self, 'lbl_spl_max'):
                     self.lbl_spl_max.setText(f'Max  {spl_db:.1f}')
             for _lv, _br in zip(
                     getattr(self, '_spl_labels', [self.lbl_spl_val]),
                     getattr(self, '_spl_bars',   [self.bar_spl])):
-                _lv.setText(f'{spl_db:.1f}')
+                _lv.setText(f'{spl_db_clamped:.1f}')
                 _lv.setStyleSheet(spl_style)
                 _br.setValue(bar_pct)
                 _br.setStyleSheet(bar_style)
@@ -7444,12 +8462,17 @@ class MainWindow(QMainWindow):
                 phase_as_gd   = getattr(self, '_phase_as_gd',   False),
             )
         else:
-            # Engine 0 en pausa — limpiar sus líneas en cada tick
+            # Engine 0 en pausa — limpiar sus líneas TF/Phase
             self.canvas_meas.line_tf.set_data([], [])
             self.canvas_meas.line_ph.set_data([], [])
-            self.canvas_meas.line_ir.set_data([], [])
-            self.canvas_meas.line_ir_peak.set_xdata([0, 0])
-            self.canvas_meas.draw_idle()
+            # Mostrar IR del engine SELECCIONADO si tiene datos activos,
+            # o limpiar si no hay señal útil
+            if ir is not None and _sel_active:
+                self.canvas_meas.update_ir_only(ir)
+            else:
+                self.canvas_meas.line_ir.set_data([], [])
+                self.canvas_meas.line_ir_peak.set_xdata([0, 0])
+                self.canvas_meas.draw_idle()
             # Calcular avg_coh desde engine 1 si está disponible
             avg_coh = 0.0
             if freqs2 is not None and gamma2_2 is not None:
@@ -7479,9 +8502,12 @@ class MainWindow(QMainWindow):
             else:
                 cm2.line_tf.set_data([], [])
                 cm2.line_ph.set_data([], [])
-                cm2.line_ir.set_data([], [])
-                cm2.line_ir_peak.set_xdata([0, 0])
-                cm2.draw_idle()
+                if ir is not None and _sel_active:
+                    cm2.update_ir_only(ir)
+                else:
+                    cm2.line_ir.set_data([], [])
+                    cm2.line_ir_peak.set_xdata([0, 0])
+                    cm2.draw_idle()
             if freqs2 is not None:
                 cm2.update_ch2(freqs2, mag_db2, phase_deg2,
                                gamma2_2, coh_thresh=thresh)
@@ -7635,7 +8661,7 @@ class MainWindow(QMainWindow):
         tab = self.tabs.currentIndex()
         canvas_map = {
             0: (self.canvas_meas,  'TF_Phase_IR'),
-            1: (self.canvas_spec,  'Spectrum'),
+            1: (self.canvas_spec,  'RTA'),
             2: (self.canvas_sgram, 'Spectrogram'),
         }
         canvas, name = canvas_map.get(tab, (self.canvas_meas, 'graph'))
@@ -7749,8 +8775,7 @@ class MainWindow(QMainWindow):
             'Mover pestaña.\n(Próximamente)')
 
     def _show_amplitude_cal(self):
-        """Calibración de amplitud — abre SPL Settings con sección de offset."""
-        self._show_spl_settings()
+        self._show_spl_calibration_dialog()
 
     # ── Options menu — dialogs ────────────────────────────────────────
 
@@ -7928,7 +8953,7 @@ class MainWindow(QMainWindow):
         # TAB 0 — SPECTRUM
         # ══════════════════════════════════════════════════════════════
         tab_sp, sp_lay = _scroll_tab()
-        tabs.addTab(tab_sp, 'Spectrum')
+        tabs.addTab(tab_sp, 'RTA')
 
         # ── General Settings ──────────────────────────────────────────
         grp_gen = QGroupBox('General Settings')
@@ -8794,101 +9819,283 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _show_target_curves_dialog(self):
-        """Target Curves — import and manage dashed overlay curves on the Magnitude graph."""
-        from PyQt6.QtWidgets import QListWidget, QListWidgetItem
+        """
+        SMAART-style Target Curves dialog.
+        Tabs: Spectrum / Transfer Function.
+        Table: ⠿  Show  Color  Size  Offset  Tolerance+/-  Name
+        """
+        from PyQt6.QtWidgets import (QTabWidget, QTableWidget, QTableWidgetItem,
+                                      QHeaderView, QCheckBox, QDoubleSpinBox as _DSPB,
+                                      QColorDialog)
         from PyQt6.QtGui import QColor
+        import numpy as _np_tc
+
+        # ── Dialog shell ───────────────────────────────────────────────
         dlg = QDialog(self)
         dlg.setWindowTitle('Target Curves')
-        dlg.resize(460, 340)
-        dlg.setStyleSheet(
-            f'QDialog{{background:{BG_APP};color:{TEXT_HI};font-size:11px;}}'
-            f'QLabel{{color:{TEXT_MID};background:transparent;}}'
-            f'QListWidget{{background:#1a1a1a;color:{TEXT_HI};border:1px solid #333;border-radius:3px;}}'
-            f'QPushButton{{background:#252525;color:{TEXT_HI};padding:4px 14px;'
-            f'border:1px solid #444;border-radius:3px;min-width:72px;}}'
-            f'QPushButton:hover{{background:#333;}}')
+        dlg.setFixedSize(760, 440)
+        _ss = (
+            f'QDialog{{background:#1c1c1c;color:{TEXT_HI};font-size:11px;}}'
+            f'QLabel{{background:transparent;color:{TEXT_HI};}}'
+            f'QTabWidget::pane{{border:1px solid #333;background:#1a1a1a;}}'
+            f'QTabBar::tab{{background:#252525;color:{TEXT_MID};padding:5px 22px;'
+            f'border:1px solid #333;border-bottom:none;border-radius:3px 3px 0 0;font-size:11px;}}'
+            f'QTabBar::tab:selected{{background:#1a1a1a;color:{TEXT_HI};}}'
+            f'QTableWidget{{background:#161616;color:{TEXT_HI};gridline-color:#2a2a2a;'
+            f'border:none;font-size:11px;selection-background-color:#2a3a2a;}}'
+            f'QHeaderView::section{{background:#222;color:{TEXT_MID};border:none;'
+            f'border-right:1px solid #333;padding:4px 6px;font-size:10px;letter-spacing:1px;}}'
+            f'QComboBox{{background:#2a2a2a;color:{TEXT_HI};border:1px solid #444;'
+            f'border-radius:2px;padding:1px 4px;font-size:11px;}}'
+            f'QDoubleSpinBox{{background:#1e1e1e;color:{TEXT_HI};border:1px solid #383838;'
+            f'border-radius:2px;padding:1px 4px;font-size:10px;}}'
+            f'QCheckBox::indicator{{width:14px;height:14px;}}'
+            f'QPushButton{{background:#2a2a2a;color:{TEXT_HI};border:1px solid #555;'
+            f'border-radius:3px;padding:5px 20px;font-size:11px;}}'
+            f'QPushButton:hover{{background:#363636;border-color:#777;}}')
+        dlg.setStyleSheet(_ss)
+
         lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(8)
+        lay.setContentsMargins(0, 0, 0, 12)
+        lay.setSpacing(0)
 
-        hdr = QLabel('TARGET  CURVES')
-        hdr.setStyleSheet(
-            f'color:{ACCENT};font-size:9px;letter-spacing:2px;font-weight:bold;'
-            f'background:transparent;padding:2px 0;')
-        lay.addWidget(hdr)
+        # ── Tab widget ─────────────────────────────────────────────────
+        tabs = QTabWidget()
+        lay.addWidget(tabs, stretch=1)
 
-        info = QLabel('Import .txt / .csv files (Hz  dB columns). REW format supported.')
-        info.setStyleSheet(f'color:{TEXT_MID};font-size:9px;background:transparent;')
-        lay.addWidget(info)
+        # ── Transfer Function tab ──────────────────────────────────────
+        tf_widget = QWidget()
+        tf_lay = QVBoxLayout(tf_widget)
+        tf_lay.setContentsMargins(0, 0, 0, 0)
+        tf_lay.setSpacing(0)
 
-        # Curve list widget
-        list_w = QListWidget()
-        list_w.setSpacing(2)
-        lay.addWidget(list_w, stretch=1)
+        table = QTableWidget()
+        table.setColumnCount(7)
+        table.setHorizontalHeaderLabels(['', 'Show', 'Color', 'Size', 'Offset', 'Tolerance +/-', 'Name'])
+        table.verticalHeader().setVisible(False)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setShowGrid(True)
+        table.horizontalHeader().setHighlightSections(False)
+        # Column widths
+        table.setColumnWidth(0, 24)   # drag
+        table.setColumnWidth(1, 50)   # show
+        table.setColumnWidth(2, 62)   # color
+        table.setColumnWidth(3, 64)   # size
+        table.setColumnWidth(4, 100)  # offset
+        table.setColumnWidth(5, 150)  # tolerance
+        table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        table.verticalHeader().setDefaultSectionSize(30)
+        tf_lay.addWidget(table)
 
-        def _refresh_list():
-            list_w.clear()
-            for tc in self._target_curves:
-                item = QListWidgetItem(
-                    f'  {tc["name"]}   ({tc["freqs"][0]:.0f}–{tc["freqs"][-1]:.0f} Hz)')
-                item.setForeground(QColor(tc['color']))
-                list_w.addItem(item)
+        tabs.addTab(tf_widget, 'Transfer Function')
 
-        _refresh_list()
+        # ── Spectrum tab (placeholder) ─────────────────────────────────
+        sp_widget = QWidget()
+        sp_lay = QVBoxLayout(sp_widget)
+        lbl_sp = QLabel('Spectrum target curves — use Transfer Function curves\nfor TF / Magnitude overlay')
+        lbl_sp.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_sp.setStyleSheet(f'color:{TEXT_MID};font-size:11px;')
+        sp_lay.addWidget(lbl_sp)
+        tabs.addTab(sp_widget, 'RTA')
+        tabs.setCurrentIndex(0)   # default TF
 
-        # Buttons row
-        btn_row = QHBoxLayout()
-        btn_import = QPushButton('📂  Import…')
-        btn_remove = QPushButton('Remove')
-        btn_clear  = QPushButton('Clear All')
-        btn_row.addWidget(btn_import)
-        btn_row.addWidget(btn_remove)
-        btn_row.addWidget(btn_clear)
-        btn_row.addStretch()
-        lay.addLayout(btn_row)
+        # ── Apply helper ───────────────────────────────────────────────
+        def _apply():
+            self.canvas_meas.update_target_curves(self._target_curves)
+            if self._secondary_panel is not None:
+                self._secondary_panel.canvas_meas.update_target_curves(self._target_curves)
 
+        # ── Build / rebuild table rows ─────────────────────────────────
+        _building = [False]   # guard against recursive signals
+
+        def _rebuild():
+            _building[0] = True
+            table.setRowCount(0)
+            for ri, tc in enumerate(self._target_curves):
+                table.insertRow(ri)
+                _fill_row(ri, tc)
+            _building[0] = False
+
+        def _fill_row(row, tc):
+            # col 0 — drag handle
+            lbl_dh = QLabel('⠿')
+            lbl_dh.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl_dh.setStyleSheet('color:#444;font-size:16px;')
+            table.setCellWidget(row, 0, lbl_dh)
+
+            # col 1 — Show checkbox (centered)
+            chk_show = QCheckBox()
+            chk_show.setChecked(tc.visible)
+            wrap1 = QWidget(); wl1 = QHBoxLayout(wrap1)
+            wl1.setContentsMargins(0,0,0,0); wl1.addWidget(chk_show, 0, Qt.AlignmentFlag.AlignCenter)
+            table.setCellWidget(row, 1, wrap1)
+
+            def _on_show(state, r=row, chk=chk_show):
+                if _building[0]: return
+                self._target_curves[r].visible = chk.isChecked()
+                _apply()
+
+            chk_show.stateChanged.connect(_on_show)
+
+            # col 2 — Color swatch button
+            btn_col = QPushButton()
+            btn_col.setStyleSheet(
+                f'background:{tc.color};border:1px solid #777;border-radius:2px;min-height:18px;')
+            btn_col.setFixedHeight(22)
+
+            def _on_color(_, r=row, b=btn_col):
+                if _building[0]: return
+                current_tc = self._target_curves[r]
+                c = QColorDialog.getColor(QColor(current_tc.color), dlg, 'Choose Color')
+                if c.isValid():
+                    current_tc.color = c.name()
+                    b.setStyleSheet(
+                        f'background:{c.name()};border:1px solid #777;border-radius:2px;min-height:18px;')
+                    _apply()
+
+            btn_col.clicked.connect(_on_color)
+            table.setCellWidget(row, 2, btn_col)
+
+            # col 3 — Size combobox
+            cmb_size = QComboBox()
+            cmb_size.addItems(['2', '3'])
+            cmb_size.setCurrentText(str(tc.line_width))
+
+            def _on_size(v, r=row):
+                if _building[0]: return
+                self._target_curves[r].line_width = int(v)
+                _apply()
+
+            cmb_size.currentTextChanged.connect(_on_size)
+            table.setCellWidget(row, 3, cmb_size)
+
+            # col 4 — Offset spinbox
+            spn_off = _DSPB()
+            spn_off.setRange(-30.0, 30.0); spn_off.setDecimals(2)
+            spn_off.setSuffix(' dB'); spn_off.setValue(tc.offset_db)
+            spn_off.setButtonSymbols(_DSPB.ButtonSymbols.NoButtons)
+            spn_off.setStyleSheet(
+                'QDoubleSpinBox{background:#1e1e1e;color:#ddd;border:none;'
+                'padding:2px 4px;font-size:10px;}')
+
+            def _on_offset(v, r=row):
+                if _building[0]: return
+                self._target_curves[r].offset_db = v
+                _apply()
+
+            spn_off.valueChanged.connect(_on_offset)
+            table.setCellWidget(row, 4, spn_off)
+
+            # col 5 — Tolerance: [checkbox] [spinbox dB]
+            tol_w = QWidget()
+            tol_l = QHBoxLayout(tol_w)
+            tol_l.setContentsMargins(6, 0, 6, 0); tol_l.setSpacing(4)
+            chk_tol = QCheckBox()
+            chk_tol.setChecked(tc.tolerance)
+            spn_tol = _DSPB()
+            spn_tol.setRange(0.1, 20.0); spn_tol.setDecimals(1)
+            spn_tol.setSuffix(' dB')
+            _tol_default = tc.tolerance_db if tc.tolerance_db > 0 else 3.0
+            if tc.tolerance_db <= 0:
+                tc.tolerance_db = _tol_default   # sync model to display default
+            spn_tol.setValue(_tol_default)
+            spn_tol.setEnabled(tc.tolerance)
+            spn_tol.setButtonSymbols(_DSPB.ButtonSymbols.NoButtons)
+            spn_tol.setStyleSheet(
+                'QDoubleSpinBox{background:#1e1e1e;color:#ddd;border:1px solid #383838;'
+                'border-radius:2px;padding:1px 4px;font-size:10px;}')
+            tol_l.addWidget(chk_tol); tol_l.addWidget(spn_tol)
+
+            def _on_tol_check(state, r=row, sp=spn_tol):
+                if _building[0]: return
+                chkd = (state == Qt.CheckState.Checked.value)
+                self._target_curves[r].tolerance    = chkd
+                self._target_curves[r].tolerance_db = sp.value()  # sync current spinbox value
+                sp.setEnabled(chkd)
+                _apply()
+
+            def _on_tol_val(v, r=row):
+                if _building[0]: return
+                self._target_curves[r].tolerance_db = v
+                _apply()
+
+            chk_tol.stateChanged.connect(_on_tol_check)
+            spn_tol.valueChanged.connect(_on_tol_val)
+            table.setCellWidget(row, 5, tol_w)
+
+            # col 6 — Name (QTableWidgetItem, not editable)
+            item_name = QTableWidgetItem(tc.name)
+            item_name.setFlags(item_name.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            if tc.builtin:
+                item_name.setForeground(QColor('#888888'))
+            table.setItem(row, 6, item_name)
+
+        _rebuild()
+
+        # ── Bottom button row ──────────────────────────────────────────
+        btn_bar = QWidget(); btn_bar.setFixedHeight(48)
+        btn_bar.setStyleSheet('background:#1c1c1c;')
+        bb_lay = QHBoxLayout(btn_bar)
+        bb_lay.setContentsMargins(12, 8, 12, 8); bb_lay.setSpacing(8)
+
+        btn_import = QPushButton('Import…')
+        btn_delete = QPushButton('Delete')
+        btn_close  = QPushButton('Close')
+
+        bb_lay.addWidget(btn_import)
+        bb_lay.addWidget(btn_delete)
+        bb_lay.addStretch()
+        bb_lay.addWidget(btn_close)
+        lay.addWidget(btn_bar)
+
+        # ── Import ─────────────────────────────────────────────────────
         def _do_import():
             path, _ = QFileDialog.getOpenFileName(
                 dlg, 'Import Target Curve', os.path.expanduser('~'),
-                'Curve files (*.txt *.csv);;All files (*)')
+                'Curve files (*.crv *.txt *.csv *.tsv);;'
+                'SMAART curves (*.crv);;'
+                'Text / CSV (*.txt *.csv *.tsv);;'
+                'All files (*)')
             if not path:
                 return
             try:
-                data = _load_curve_file(path)
+                meta_name, data = _load_curve_file(path)
             except Exception as e:
                 QMessageBox.critical(dlg, 'Error loading curve', str(e))
                 return
             color = TARGET_PALETTE[len(self._target_curves) % len(TARGET_PALETTE)]
-            name  = os.path.splitext(os.path.basename(path))[0]
-            self.canvas_meas.add_target_curve(data[:, 0], data[:, 1], color, name)
-            self._target_curves.append({'freqs': data[:, 0], 'db': data[:, 1],
-                                         'color': color, 'name': name})
-            _refresh_list()
+            # Prefer name from file metadata, fall back to filename
+            name  = meta_name or os.path.splitext(os.path.basename(path))[0]
+            tc    = TargetCurve(
+                name=name, freqs=data[:, 0], mag_db=data[:, 1],
+                color=color, visible=True, line_width=2)
+            self._target_curves.append(tc)
+            _rebuild()
+            _apply()
             self.sb.showMessage(
-                f'✓  Target: {name}  ({len(data)} pts, {data[0,0]:.0f}–{data[-1,0]:.0f} Hz)', 5000)
+                f'✓  Target: {name}  ({len(data)} pts, '
+                f'{data[0,0]:.0f}–{data[-1,0]:.0f} Hz)', 5000)
 
-        def _do_remove():
-            idx = list_w.currentRow()
-            if idx < 0:
+        # ── Delete ─────────────────────────────────────────────────────
+        def _do_delete():
+            row = table.currentRow()
+            if row < 0 or row >= len(self._target_curves):
                 return
-            self.canvas_meas.remove_target_curve(idx)
-            if idx < len(self._target_curves):
-                self._target_curves.pop(idx)
-            _refresh_list()
-
-        def _do_clear():
-            for i in range(len(self._target_curves) - 1, -1, -1):
-                self.canvas_meas.remove_target_curve(i)
-            self._target_curves.clear()
-            _refresh_list()
+            tc = self._target_curves[row]
+            if tc.builtin:
+                # Factory curves: just hide rather than delete
+                tc.visible = False
+                _rebuild(); _apply()
+                self.sb.showMessage('Built-in curves cannot be deleted — hidden instead.', 3000)
+                return
+            self._target_curves.pop(row)
+            _rebuild(); _apply()
 
         btn_import.clicked.connect(_do_import)
-        btn_remove.clicked.connect(_do_remove)
-        btn_clear.clicked.connect(_do_clear)
+        btn_delete.clicked.connect(_do_delete)
+        btn_close.clicked.connect(dlg.accept)
 
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        bb.rejected.connect(dlg.accept)
-        lay.addWidget(bb)
         dlg.exec()
 
     def _show_optimize_dialog(self):
@@ -8901,7 +10108,7 @@ class MainWindow(QMainWindow):
         # Validate prerequisites
         if not self._target_curves:
             QMessageBox.information(self, 'No Target Curve',
-                'Load a target curve first via Options → Target Curves…')
+                'Enable a target curve first via Options → Target Curves…')
             return
         if self.canvas_meas._last_freqs is None:
             QMessageBox.information(self, 'No Measurement',
@@ -8915,20 +10122,22 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, 'No Data', 'No magnitude data available.')
             return
 
-        # Use first target curve (or let user pick if multiple)
-        if len(self._target_curves) == 1:
-            tc = self._target_curves[0]
+        # Use first visible target curve (or let user pick if multiple visible)
+        visible_tcs = [t for t in self._target_curves if t.visible]
+        if not visible_tcs:
+            visible_tcs = list(self._target_curves)  # fallback: all
+        if len(visible_tcs) == 1:
+            tc = visible_tcs[0]
         else:
-            # Let user select target curve
             from PyQt6.QtWidgets import QInputDialog
-            names = [t['name'] for t in self._target_curves]
+            names = [t.name for t in visible_tcs]
             name, ok = QInputDialog.getItem(self, 'Select Target', 'Target curve:', names, 0, False)
             if not ok:
                 return
-            tc = next(t for t in self._target_curves if t['name'] == name)
+            tc = next(t for t in visible_tcs if t.name == name)
 
-        freqs_t = tc['freqs']
-        mag_t   = tc['db']
+        freqs_t = tc.freqs
+        mag_t   = tc.mag_db + tc.offset_db
 
         # Interpolate target to measurement frequencies
         mag_t_interp = np.interp(freqs_m, freqs_t, mag_t)
@@ -8985,7 +10194,7 @@ class MainWindow(QMainWindow):
 
         # ── Build the dialog ────────────────────────────────────────────
         dlg = QDialog(self)
-        dlg.setWindowTitle(f'Optimize: Measurement → {tc["name"]}')
+        dlg.setWindowTitle(f'Optimize: Measurement → {tc.name}')
         dlg.resize(700, 560)
         dlg.setStyleSheet(
             f'QDialog{{background:{BG_APP};color:{TEXT_HI};font-size:11px;}}'
@@ -9002,7 +10211,7 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(12, 10, 12, 10)
         lay.setSpacing(8)
 
-        hdr = QLabel(f'OPTIMIZATION  ·  {tc["name"]}')
+        hdr = QLabel(f'OPTIMIZATION  ·  {tc.name}')
         hdr.setStyleSheet(f'color:{ACCENT};font-size:9px;letter-spacing:2px;font-weight:bold;background:transparent;')
         lay.addWidget(hdr)
 
@@ -9017,7 +10226,7 @@ class MainWindow(QMainWindow):
             fig.patch.set_facecolor('#111111')
             ax.set_facecolor('#111111')
             ax.plot(freqs_m, delta, color='#444', linewidth=0.8, alpha=0.6)
-            ax.plot(freqs_m, delta_s, color=tc['color'], linewidth=1.4)
+            ax.plot(freqs_m, delta_s, color=tc.color, linewidth=1.4)
             ax.axhline(0, color='#3a3a3a', linewidth=0.8, linestyle='--')
             ax.fill_between(freqs_m, 0, delta_s,
                             where=(delta_s > 0), color='#2a4a2a', alpha=0.4)
@@ -9113,7 +10322,7 @@ class MainWindow(QMainWindow):
                 'Text files (*.txt);;All files (*)')
             if not path:
                 return
-            lines = [f'# Coherence — Optimization: Measurement vs "{tc["name"]}"',
+            lines = [f'# Coherence — Optimization: Measurement vs "{tc.name}"',
                      f'# Generated: {__import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M")}',
                      '', '## PARAMETRIC EQ CORRECTIONS', 'Freq (Hz)  Gain (dB)  Q']
             for s in suggestions:
@@ -9126,11 +10335,15 @@ class MainWindow(QMainWindow):
             self.sb.showMessage(f'✓  Exported: {os.path.basename(path)}', 4000)
 
         def _show_delta():
-            color = '#FF9F0A'
-            self.canvas_meas.add_target_curve(freqs_m, mag_m + delta_s, color, f'Δ {tc["name"]}')
-            self._target_curves.append({
-                'freqs': freqs_m, 'db': mag_m + delta_s,
-                'color': color, 'name': f'Δ {tc["name"]}'})
+            color    = '#FF9F0A'
+            dname    = f'Δ {tc.name}'
+            delta_tc = TargetCurve(
+                name=dname, freqs=freqs_m, mag_db=mag_m + delta_s,
+                color=color, visible=True, line_width=2)
+            self._target_curves.append(delta_tc)
+            self.canvas_meas.update_target_curves(self._target_curves)
+            if self._secondary_panel is not None:
+                self._secondary_panel.canvas_meas.update_target_curves(self._target_curves)
             self.sb.showMessage('Delta curve added to Magnitude graph', 3000)
             btn_delta.setEnabled(False)
 
@@ -9221,12 +10434,16 @@ class MainWindow(QMainWindow):
 
 
     def _capture_trace_dialog(self):
-        """Muestra el dialog 'Capture Trace' — nombre + selector de color."""
+        """Muestra el dialog 'Capture Trace' — nombre + selector de color + fuente (Current / AVG)."""
         if len(self._traces) >= MAX_TRACES:
             self.sb.showMessage(
                 f'⚠  Maximum {MAX_TRACES} traces. Delete one before saving.', 4000)
             return
-        if self.canvas_meas._last_freqs is None:
+
+        # Check data availability
+        has_current = self.canvas_meas._last_freqs is not None
+        has_avg     = self.canvas_meas._last_avg_freqs is not None
+        if not has_current and not has_avg:
             self.sb.showMessage('⚠  No data — start the measurement first.', 3000)
             return
 
@@ -9240,12 +10457,13 @@ class MainWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle('Save Trace')
         dlg.setModal(True)
-        dlg.setFixedSize(400, 190)
+        dlg.setFixedSize(400, 230)
         dlg.setStyleSheet(
             'QDialog{background:#1a1a1a;}'
             f'QLabel{{color:{TEXT_HI};font-size:12px;background:transparent;}}'
             'QLineEdit{background:#e8e8e8;color:#111;border:none;'
             'border-radius:3px;padding:4px 8px;font-size:12px;}'
+            f'QRadioButton{{color:{TEXT_HI};font-size:12px;background:transparent;}}'
             f'QPushButton#ok_btn{{background:#2a3a2a;color:{TEXT_HI};'
             'border:1px solid #4a6a4a;border-radius:4px;'
             'font-size:11px;padding:5px 22px;}}'
@@ -9258,6 +10476,27 @@ class MainWindow(QMainWindow):
         root = QVBoxLayout(dlg)
         root.setContentsMargins(20, 18, 20, 14)
         root.setSpacing(10)
+
+        # Source row (Current / AVG)
+        from PyQt6.QtWidgets import QButtonGroup, QRadioButton
+        row_src = QHBoxLayout()
+        row_src.addWidget(QLabel('Source:'))
+        rb_current = QRadioButton('Current')
+        rb_avg     = QRadioButton('AVG')
+        rb_current.setEnabled(has_current)
+        rb_avg.setEnabled(has_avg)
+        # Default: prefer AVG if available, else Current
+        if has_avg:
+            rb_avg.setChecked(True)
+        else:
+            rb_current.setChecked(True)
+        grp_src = QButtonGroup(dlg)
+        grp_src.addButton(rb_current)
+        grp_src.addButton(rb_avg)
+        row_src.addWidget(rb_current)
+        row_src.addWidget(rb_avg)
+        row_src.addStretch()
+        root.addLayout(row_src)
 
         # Name row
         row_name = QHBoxLayout()
@@ -9315,20 +10554,36 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        name  = edit.text().strip() or default_name
-        color = _picked_color[0]
-        self._save_trace(name=name, color=color)
+        name   = edit.text().strip() or default_name
+        color  = _picked_color[0]
+        source = 'avg' if rb_avg.isChecked() else 'current'
+        self._save_trace(name=name, color=color, source=source)
 
-    def _save_trace(self, name: str = '', color: str = None):
-        """Captura el estado actual y lo guarda como traza estática de referencia.
+    def _save_trace(self, name: str = '', color: str = None, source: str = 'current'):
+        """Captura el estado actual (o AVG) y lo guarda como traza estática de referencia.
         Siempre guarda magnitud Y fase con el mismo color (están enlazadas).
+        source: 'current' | 'avg'
         """
         if len(self._traces) >= MAX_TRACES:
             self.sb.showMessage(
                 f'⚠  Maximum {MAX_TRACES} traces. Delete one before saving.', 4000)
             return
 
-        f = self.canvas_meas._last_freqs
+        use_avg = (source == 'avg') and (self.canvas_meas._last_avg_freqs is not None)
+
+        if use_avg:
+            f        = self.canvas_meas._last_avg_freqs
+            mag_db   = self.canvas_meas._last_avg_mag_db
+            phase_deg = self.canvas_meas._last_avg_phase_deg
+            gamma2   = self.canvas_meas._last_avg_gamma2
+            ir       = None   # AVG trace has no IR
+        else:
+            f         = self.canvas_meas._last_freqs
+            mag_db    = self.canvas_meas._last_mag_db
+            phase_deg = self.canvas_meas._last_phase_deg
+            gamma2    = self.canvas_meas._last_gamma2
+            ir        = self.canvas_meas._last_ir
+
         if f is None:
             self.sb.showMessage('⚠  No data — start the measurement first.', 3000)
             return
@@ -9360,11 +10615,10 @@ class MainWindow(QMainWindow):
             name         = name,
             color        = color,
             freqs        = f.copy(),
-            mag_db       = self.canvas_meas._last_mag_db.copy(),
-            phase_deg    = self.canvas_meas._last_phase_deg.copy(),
-            gamma2       = self.canvas_meas._last_gamma2.copy(),
-            ir           = (self.canvas_meas._last_ir.copy()
-                            if self.canvas_meas._last_ir is not None else None),
+            mag_db       = mag_db.copy(),
+            phase_deg    = phase_deg.copy(),
+            gamma2       = gamma2.copy() if gamma2 is not None else np.zeros_like(f),
+            ir           = (ir.copy() if ir is not None else None),
             delay_ref_ms = self.canvas_meas._delay_ref_ms,
             coh_thresh   = thresh,
             lev_x        = lev_x.copy(),
@@ -9373,15 +10627,21 @@ class MainWindow(QMainWindow):
         )
         self._traces.append(tr)
 
-        # Dibujar en ambos canvas
+        # Dibujar en todos los canvas de medición (principal + panel secundario si existe)
         self.canvas_meas.store_trace(
             tr.freqs, tr.mag_db, tr.phase_deg, tr.gamma2, tr.ir,
             tr.delay_ref_ms, tr.color, tr.coh_thresh
         )
+        if self._secondary_panel is not None:
+            self._secondary_panel.canvas_meas.store_trace(
+                tr.freqs, tr.mag_db, tr.phase_deg, tr.gamma2, tr.ir,
+                tr.delay_ref_ms, tr.color, tr.coh_thresh
+            )
         self.canvas_spec.store_trace(tr.lev_x, tr.lev_y, tr.color, tr.lev_freqs)
 
         self._rebuild_trace_panel()
-        self.sb.showMessage(f'✓  Trace saved: {name}  (Magnitude + Phase + IR)', 3000)
+        src_label = 'AVG' if use_avg else 'Current'
+        self.sb.showMessage(f'✓  Trace saved: {name}  [{src_label}]  (Magnitude + Phase + Coherence)', 3000)
 
     def _delete_trace(self, idx):
         """Elimina la traza idx de canvas y lista."""
@@ -9389,6 +10649,8 @@ class MainWindow(QMainWindow):
             self._traces.pop(idx)
             self.canvas_meas.remove_trace(idx)
             self.canvas_spec.remove_trace(idx)
+            if self._secondary_panel is not None:
+                self._secondary_panel.canvas_meas.remove_trace(idx)
             self._rebuild_trace_panel()
 
     def _toggle_trace_visible(self, idx, checked):
@@ -9397,6 +10659,8 @@ class MainWindow(QMainWindow):
             self._traces[idx].visible = checked
             self.canvas_meas.set_trace_visible(idx, checked)
             self.canvas_spec.set_trace_visible(idx, checked)
+            if self._secondary_panel is not None:
+                self._secondary_panel.canvas_meas.set_trace_visible(idx, checked)
 
     def _rebuild_trace_panel(self):
         """Reconstruye la lista de filas de trazas desde self._traces."""

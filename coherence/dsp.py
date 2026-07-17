@@ -349,7 +349,7 @@ def setup_smaart_axis(ax, fmin=20, fmax=20000, bg='#0d0d0d',
                    labelbottom=show_xlabels)
 
     if show_xlabel:
-        ax.set_xlabel('Frecuencia (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
+        ax.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
 
     ax.grid(True, which='major', linestyle='-',  lw=0.55, color='#1e281e')
     ax.grid(True, which='minor', linestyle=':',  lw=0.30, color='#171e17')
