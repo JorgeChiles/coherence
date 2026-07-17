@@ -16,6 +16,7 @@ coherencia convergen mucho más rápido y la fase queda estable — igual que SM
 """
 
 import numpy as np
+import matplotlib.ticker as _mticker
 
 # ── Paleta de colores (dark SMAART-style) ──────────────────────────────
 BLUE   = '#4fc3f7'
@@ -314,6 +315,13 @@ def find_delay(x, y, fs=48000):
 
 # ── Eje logarítmico estilo SMAART ─────────────────────────────────────
 
+def _hz_label(x, _pos):
+    """Format frequency: '20 Hz', '1 kHz', '10 kHz', etc."""
+    if x >= 1000:
+        v = x / 1000
+        return f'{int(v)} kHz' if v == int(v) else f'{v:.1f} kHz'
+    return f'{int(x)} Hz'
+
 def setup_smaart_axis(ax, fmin=20, fmax=20000, bg='#0d0d0d',
                       show_xlabels=True, show_xlabel=False):
     """
@@ -331,22 +339,16 @@ def setup_smaart_axis(ax, fmin=20, fmax=20000, bg='#0d0d0d',
              630, 800, 1250, 1600, 2500, 3150, 4000, 6300, 8000,
              12500, 16000]
 
-    # Etiquetas con unidades: Hz bajo 1 kHz, kHz arriba
-    hz_labels = ['20 Hz', '50 Hz', '100 Hz', '200 Hz', '500 Hz',
-                 '1 kHz', '2 kHz', '5 kHz', '10 kHz', '20 kHz']
-
+    # Use FuncFormatter — more robust than FixedFormatter on log scale
     ax.set_xticks(major)
-    if show_xlabels:
-        ax.set_xticklabels(hz_labels, fontsize=7, color='#9e9e9e')
-    else:
-        ax.set_xticklabels([], minor=False)   # grid sí, labels no
-
+    ax.xaxis.set_major_formatter(_mticker.FuncFormatter(_hz_label))
     ax.set_xticks(minor, minor=True)
-    ax.set_xticklabels([], minor=True)
+    ax.xaxis.set_minor_formatter(_mticker.NullFormatter())
 
     ax.tick_params(axis='y', labelsize=8, colors='#8a9e8a')
-    ax.tick_params(axis='x', which='both', colors='#4a5a4a',
+    ax.tick_params(axis='x', which='major', labelsize=7, colors='#9e9e9e',
                    labelbottom=show_xlabels)
+    ax.tick_params(axis='x', which='minor', colors='#4a5a4a', labelbottom=False)
 
     if show_xlabel:
         ax.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)

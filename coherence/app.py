@@ -336,10 +336,10 @@ QStatusBar {{
 }}
 #lbl_app_title {{
     color: {ACCENT};
-    font-size: 14px;
+    font-size: 11px;
     font-weight: bold;
-    letter-spacing: 4px;
-    padding: 0 10px;
+    letter-spacing: 3px;
+    padding: 0 8px;
 }}
 #lbl_cursor_info {{
     color: {TEXT_HI};
@@ -951,12 +951,23 @@ class CanvasOverlay(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        w, h = self.width(), self.height()
+        # Position button INSIDE the plot area (same style as _mag_lbl in MeasurementCanvas).
+        # Read axes bounds from the canvas so the label never ends up in the top margin.
+        lx, ty = 6, 6
+        if self._canvas is not None and hasattr(self._canvas, 'ax'):
+            try:
+                p = self._canvas.ax.get_position()
+                lx = max(6, int(w * p.x0) + 4)
+                ty = max(4, int(h * (1.0 - p.y1)) + 4)
+            except Exception:
+                pass
         self._btn.adjustSize()
-        self._btn.move(6, 6)
+        self._btn.move(lx, ty)
         # Engrane a la derecha del dropdown
-        self._gear.move(self._btn.x() + self._btn.width() + 4, 6)
+        self._gear.move(lx + self._btn.width() + 4, ty)
         # "+" en la esquina inferior-izquierda
-        self._btn_add.move(6, self.height() - 26)
+        self._btn_add.move(6, h - 26)
 
     def _show_dropdown(self):
         from PyQt6.QtWidgets import QMenu
@@ -1040,9 +1051,9 @@ class MeasurementCanvas(FigureCanvas):
 
         gs = gridspec.GridSpec(
             3, 1, figure=self.fig,
-            hspace=0.22,
-            left=0.055, right=0.935,
-            top=0.93, bottom=0.07,
+            hspace=0.12,
+            left=0.07, right=0.935,
+            top=0.98, bottom=0.06,
             height_ratios=[1.1, 2.2, 0.85]    # IR panel más grande
         )
 
@@ -1279,7 +1290,7 @@ class MeasurementCanvas(FigureCanvas):
             for ax in (self.ax_ir, self.ax_tf, self.ax_coh):
                 ax.set_visible(False)
             self.ax_ph.set_visible(True)
-            self.ax_ph.set_position([0.055, 0.07, 0.880, 0.91])
+            self.ax_ph.set_position([0.07, 0.06, 0.865, 0.92])
             for ln in self._trace_ph_lines:
                 ln.set_visible(True)
             self._ir_visible = False
@@ -1287,7 +1298,8 @@ class MeasurementCanvas(FigureCanvas):
                 self._smooth_btn.setVisible(False)
 
         elif mode == 'magnitude_ir':
-            # IR (30%) arriba + Magnitude (70%) abajo — sin Phase
+            # IR (33%) arriba + Magnitude (67%) abajo — sin Phase
+            # Con splitter 60/40 esto resulta en 20%/40%/40% del total de la ventana
             self.ax_ir.set_visible(True)
             self.ax_tf.set_visible(True)
             self.ax_coh.set_visible(True)
@@ -1298,8 +1310,8 @@ class MeasurementCanvas(FigureCanvas):
             canvas_top    = p['ir'][1] + p['ir'][3]
             total_h = canvas_top - canvas_bottom
             GAP  = 0.03
-            ir_h = (total_h - GAP) * 0.30
-            tf_h = (total_h - GAP) * 0.70
+            ir_h = (total_h - GAP) * 0.333
+            tf_h = (total_h - GAP) * 0.667
             tf_b = canvas_bottom
             ir_b = tf_b + tf_h + GAP
             self.ax_ir.set_position( [L, ir_b, W, ir_h])
@@ -2336,7 +2348,7 @@ class SpectrumCanvas(FigureCanvas):
 
     def _build(self):
         self.ax = self.fig.add_subplot(111, facecolor=BG_PLOT)
-        self.fig.subplots_adjust(left=0.07, right=0.97, top=0.95, bottom=0.09)
+        self.fig.subplots_adjust(left=0.07, right=0.935, top=0.98, bottom=0.07)
 
         setup_smaart_axis(self.ax, bg=BG_PLOT,
                           show_xlabels=True, show_xlabel=True)
@@ -2424,14 +2436,14 @@ class SpectrumCanvas(FigureCanvas):
         if w < 30 or h < 30:
             return
 
-        # subplots_adjust: right=0.97, bottom=0.09
-        # En Qt: x_right = w*0.97,  y_ax_bottom = h*(1-0.09) = h*0.91
+        # subplots_adjust: right=0.935, bottom=0.07
+        # En Qt: x_right = w*0.935,  y_ax_bottom = h*(1-0.07) = h*0.93
         rw = max(self._res_btn.sizeHint().width(), 84)
         rh = 22
         self._res_btn.resize(rw, rh)
 
-        x_res = int(w * 0.97) - rw - 4
-        y_res = int(h * 0.91) - rh - 2   # justo encima del borde inferior del ax
+        x_res = int(w * 0.935) - rw - 4
+        y_res = int(h * 0.93) - rh - 2   # justo encima del borde inferior del ax
         self._res_btn.move(x_res, y_res)
 
         # ⚙ fuera del eje (debajo del eje X, extremo derecho)
@@ -2712,9 +2724,10 @@ class SpectrogramCanvas(FigureCanvas):
         self._buf   = None   # shape (2 * N_TIME, N_FREQ)
         self._ptr   = 0      # write pointer (0..N_TIME-1)
         self._freqs = None
-        self._mesh  = None
-        self._cbar  = None
-        self._bg    = None   # background cacheado para blit
+        self._mesh   = None
+        self._cbar   = None
+        self._cbar_ax = None  # fixed-position colorbar axes (cax approach)
+        self._bg     = None   # background cacheado para blit
         self._vmin  = self.VMIN_DEFAULT
         self._vmax  = self.VMAX_DEFAULT
         # Cursor — QLabel Qt overlay (sin tocar el blit de matplotlib)
@@ -2733,10 +2746,8 @@ class SpectrogramCanvas(FigureCanvas):
 
     def _build(self):
         self.ax = self.fig.add_subplot(111, facecolor=BG_PLOT)
-        self.fig.subplots_adjust(left=0.06, right=0.90, top=0.96, bottom=0.09)
-        self.ax.set_title('SPECTROGRAM', fontsize=9,
-                          fontfamily='Menlo', color=TEXT_MID, loc='left')
-        self.ax.set_xlabel('Frecuencia (Hz)', fontsize=8, color=TEXT_MID)
+        self.fig.subplots_adjust(left=0.07, right=0.935, top=0.98, bottom=0.07)
+        self.ax.set_xlabel('Frequency (Hz)', fontsize=7, color=TEXT_MID)
         self.ax.set_xscale('log')
         self.ax.set_xlim(20, 20000)
         self._apply_xticks()
@@ -2826,9 +2837,7 @@ class SpectrogramCanvas(FigureCanvas):
         """Construye pcolormesh desde cero (primer frame o cambio de resolución)."""
         self.ax.cla()
         self.ax.set_facecolor('#000000')   # fondo negro puro para mejor contraste
-        self.ax.set_title('SPECTROGRAM', fontsize=9,
-                          fontfamily='Menlo', color=TEXT_MID, loc='left')
-        self.ax.set_xlabel('Frecuencia (Hz)', fontsize=8, color=TEXT_MID)
+        self.ax.set_xlabel('Frequency (Hz)', fontsize=7, color=TEXT_MID)
 
         t = np.arange(self.N_TIME)  # Y: 0=más antiguo (arriba), N-1=más nuevo (abajo)
         self._mesh = self.ax.pcolormesh(
@@ -2850,15 +2859,25 @@ class SpectrogramCanvas(FigureCanvas):
             sp.set_color(BORDER)
         self.ax.tick_params(colors=TEXT_MID, labelsize=7)
 
-        # Colorbar lateral con escala dBFS
+        # Colorbar lateral con escala dBFS — usa cax fijo para no mover el eje X
         if self._cbar is not None:
             try:
                 self._cbar.remove()
             except Exception:
                 pass
+            self._cbar = None
+        if self._cbar_ax is not None:
+            try:
+                self._cbar_ax.remove()
+            except Exception:
+                pass
+            self._cbar_ax = None
+        # Fixed-position colorbar axes: [left, bottom, width, height] in fig coords.
+        # Main ax ends at right=0.935; colorbar sits at 0.940–0.952 (within figure).
+        # Height matches subplots_adjust: top=0.98 − bottom=0.07 = 0.91
+        self._cbar_ax = self.fig.add_axes([0.940, 0.07, 0.012, 0.91])
         self._cbar = self.fig.colorbar(
-            self._mesh, ax=self.ax,
-            pad=0.01, fraction=0.025,
+            self._mesh, cax=self._cbar_ax,
             ticks=[self._vmin,
                    (self._vmin + self._vmax) / 2,
                    self._vmax],
@@ -2870,7 +2889,7 @@ class SpectrogramCanvas(FigureCanvas):
         for t_lbl in self._cbar.ax.get_yticklabels():
             t_lbl.set_color(TEXT_MID)
 
-        self.fig.subplots_adjust(left=0.06, right=0.90, top=0.96, bottom=0.09)
+        self.fig.subplots_adjust(left=0.07, right=0.935, top=0.98, bottom=0.07)
 
         self.draw()
         self._bg = self.copy_from_bbox(self.ax.bbox)
@@ -3721,7 +3740,7 @@ class MainWindow(QMainWindow):
     def _build_info_bar(self):
         bar = QWidget()
         bar.setObjectName('info_bar')
-        bar.setFixedHeight(44)
+        bar.setFixedHeight(26)
         h = QHBoxLayout(bar)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
@@ -5963,6 +5982,31 @@ class MainWindow(QMainWindow):
         """Compat — ya no hay tabs reales."""
         pass
 
+    def _sync_splitter_for_ir(self):
+        """Adjust the two-slot splitter proportions based on IR visibility.
+
+        When IR is ON and a slot2 panel is visible:
+            slot1 = 60%  (IR≈20% + Magnitude≈40% of total)
+            slot2 = 40%  (Phase / RTA)
+        When IR is OFF:
+            slot1 = slot2 = 50%  (equal split)
+
+        Has no effect when slot2 is not present (single-canvas layouts handle
+        IR proportions purely via matplotlib axis positioning).
+        """
+        if not hasattr(self, '_slot2_area') or not self._slot2_area.isVisible():
+            return
+        sizes = self._panel_splitter.sizes()
+        total = sum(sizes) if sizes else self._panel_splitter.height()
+        if total <= 0:
+            return
+        ir_on = getattr(self, '_ir_visible', False)
+        if ir_on:
+            self._panel_splitter.setSizes([int(total * 0.60), int(total * 0.40)])
+        else:
+            half = total // 2
+            self._panel_splitter.setSizes([half, total - half])
+
     def _toggle_ir_panel(self, *args):
         """Cmd+I — toggle IR independientemente del layout Magnitude/Phase."""
         canvas  = self.canvas_meas
@@ -5982,9 +6026,9 @@ class MainWindow(QMainWindow):
             self._ir_visible = canvas._ir_visible
         if hasattr(self, '_act_live_ir'):
             self._act_live_ir.setChecked(self._ir_visible)
-
-        if hasattr(self, '_act_live_ir'):
-            self._act_live_ir.setChecked(self._ir_visible)
+        # Reajustar splitter: 60/40 con IR, 50/50 sin IR
+        from PyQt6.QtCore import QTimer as _QT
+        _QT.singleShot(30, self._sync_splitter_for_ir)
 
     def _show_panel_menu_from_canvas(self, name: str):
         """Global view switch triggered from inside-panel dropdown."""
@@ -6151,15 +6195,9 @@ class MainWindow(QMainWindow):
         elif wrap is self._wrap_meas:
             wrap._btn.setVisible(False)   # meas usa _ph_lbl interno para slot2
 
-        # Split 50/50 — usar sum(sizes) para valores reales post-layout
+        # Ajustar splitter respetando IR: 60/40 si IR ON, 50/50 si IR OFF
         from PyQt6.QtCore import QTimer as _QT
-        def _split():
-            sizes = self._panel_splitter.sizes()
-            total = sum(sizes) if sizes else self._panel_splitter.height()
-            if total > 0:
-                half = total // 2
-                self._panel_splitter.setSizes([half, total - half])
-        _QT.singleShot(50, _split)   # 50ms da tiempo al layout de calcularse
+        _QT.singleShot(60, self._sync_splitter_for_ir)
 
     def _hide_slot2_area(self):
         """Hide slot2 and return any wraps in it back to the main QStackedWidget."""

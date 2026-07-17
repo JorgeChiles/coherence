@@ -434,35 +434,45 @@ class AudioEngine:
         """
         Encuentra la primera sample rate que funcione.
         Si n_out == 0, solo verifica la entrada (stream input-only).
+
+        Cuando dev_in == dev_out (mismo dispositivo dúplex, ej. Scarlett 18i8),
+        CoreAudio rechaza check_input_settings + check_output_settings por separado
+        (PaErrorCode -9986). En ese caso verificamos con check_input_settings solo
+        y confiamos en que el stream dúplex se abrirá correctamente.
         """
         candidates = [self.fs] + [f for f in self._FS_CANDIDATES if f != self.fs]
         info_in  = sd.query_devices(self.dev_in)
         for fs_default in [int(info_in['default_samplerate'])]:
             if fs_default not in candidates:
-                candidates.append(fs_default)
-        if n_out > 0:
+                candidates.insert(0, fs_default)   # probar primero la tasa nativa
+        if n_out > 0 and self.dev_out != self.dev_in:
             info_out = sd.query_devices(self.dev_out)
             for fs_default in [int(info_out['default_samplerate'])]:
                 if fs_default not in candidates:
                     candidates.append(fs_default)
 
+        duplex_same = (n_out > 0 and self.dev_in == self.dev_out)
         last_err = None
+
         for fs in candidates:
             try:
                 sd.check_input_settings(device=self.dev_in, channels=n_in, samplerate=fs)
-                if n_out > 0:
+                if n_out > 0 and not duplex_same:
+                    # Solo verificar output separado si son dispositivos distintos
                     sd.check_output_settings(device=self.dev_out, channels=n_out,
                                              samplerate=fs)
                 return fs
             except sd.PortAudioError as e:
                 last_err = e
+            except Exception as e:
+                last_err = e
 
-        raise RuntimeError(
-            f"Ninguna sample rate compatible para "
-            f"IN '{sd.query_devices(self.dev_in)['name']}'"
-            + (f" y OUT '{sd.query_devices(self.dev_out)['name']}'" if n_out > 0 else '')
-            + f". Último error: {last_err}"
-        )
+        # Último recurso: devolver la tasa nativa del dispositivo sin verificar
+        # (necesario cuando CoreAudio bloquea las queries — PaErrorCode -9986)
+        native_fs = int(info_in['default_samplerate'])
+        print(f'[AudioEngine] ⚠  Todas las verificaciones fallaron (último error: {last_err}). '
+              f'Intentando con tasa nativa {native_fs} Hz sin verificación previa.')
+        return native_fs
 
     def _callback_input_only(self, indata, frames, time, status):
         """Callback para stream sin salida (dispositivo solo-captura)."""
@@ -486,6 +496,16 @@ class AudioEngine:
     def start(self):
         if self._running:
             return
+
+        # ── DEBUG: listar dispositivos disponibles ────────────────────
+        print('\n[AudioEngine] Dispositivos disponibles:')
+        for i, d in enumerate(sd.query_devices()):
+            tag = ''
+            if i == self.dev_in:  tag += ' ← IN'
+            if i == self.dev_out: tag += ' ← OUT'
+            print(f'  [{i}] {d["name"]}  in={d["max_input_channels"]} out={d["max_output_channels"]}{tag}')
+        print(f'[AudioEngine] dev_in={self.dev_in}  dev_out={self.dev_out}\n')
+        # ─────────────────────────────────────────────────────────────
 
         # Verificar que los dispositivos guardados siguen existiendo;
         # si no, caer al default del sistema para no crashear.
@@ -590,10 +610,15 @@ class AudioEngine:
             n_out  = min(2, max_out)
             fs_use = self._negotiate_fs(n_in, n_out)
             self.fs = fs_use
+            # Cuando IN y OUT son el mismo dispositivo (ej. Scarlett 18i8 USB),
+            # CoreAudio exige abrir un único stream dúplex — no dos streams separados.
+            # Pasar un entero en vez de una tupla lo indica a sounddevice/PortAudio.
+            _device_arg = self.dev_in if self.dev_in == self.dev_out \
+                          else (self.dev_in, self.dev_out)
             self._stream = sd.Stream(
                 samplerate = fs_use,
                 blocksize  = self.blocksize,
-                device     = (self.dev_in, self.dev_out),
+                device     = _device_arg,
                 channels   = (n_in, n_out),
                 dtype      = 'float32',
                 callback   = self._callback,
