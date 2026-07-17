@@ -35,3 +35,14 @@ build_script:
 artifacts:
   - path: Coherence-Windows.zip
     name: Coherence-Windows
+
+deploy:
+  - provider: GitHub
+    auth_token:
+      secure: $(GITHUB_TOKEN)
+    artifact: Coherence-Windows
+    draft: false
+    prerelease: false
+    on:
+      branch: main
+      appveyor_repo_tag: true
