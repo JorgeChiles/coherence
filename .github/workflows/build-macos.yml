@@ -1,0 +1,62 @@
+name: Build macOS
+
+on:
+  workflow_dispatch:          # manual button in GitHub Actions
+  push:
+    tags:
+      - 'v*'                  # triggers only on: git tag v0.x.x && git push --tags
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pyqt6 matplotlib numpy sounddevice scipy pyinstaller
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --noconfirm --onedir --windowed \
+            --name Coherence \
+            --hidden-import PyQt6.QtCore \
+            --hidden-import PyQt6.QtGui \
+            --hidden-import PyQt6.QtWidgets \
+            --hidden-import PyQt6.sip \
+            --hidden-import matplotlib.backends.backend_qtagg \
+            --hidden-import matplotlib.backends.backend_agg \
+            --hidden-import scipy.signal \
+            --hidden-import scipy.signal._upfirdn_apply \
+            --hidden-import sounddevice \
+            --collect-binaries sounddevice \
+            --exclude-module tkinter \
+            --exclude-module wx \
+            run_coherence.py
+
+      - name: Zip .app bundle
+        run: |
+          APP=$(find dist -name "*.app" -maxdepth 2 | head -1)
+          echo "Bundling: $APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" Coherence-macOS.zip
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: Coherence-macOS.zip
+
+      - name: Upload as artifact (manual tests)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Coherence-macOS
+          path: Coherence-macOS.zip
+          retention-days: 7
