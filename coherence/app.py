@@ -2350,8 +2350,8 @@ class SpectrumCanvas(FigureCanvas):
         for sp in self.ax.spines.values():
             sp.set_color(BORDER)
 
-        # Línea AVG (opcional, no ligada a engines)
-        self.line_y_avg, = self.ax.semilogx([], [], color=CYAN, lw=1.5, alpha=0.90, label='AVG', ls='--')
+        # Línea AVG (opcional, no ligada a engines) — sin label para no mostrar leyenda permanente
+        self.line_y_avg, = self.ax.semilogx([], [], color=CYAN, lw=1.5, alpha=0.90, ls='--')
         # Las líneas por engine se crean dinámicamente con add_sp_engine_line()
 
         # Crosshair cursor — visible, color claro
@@ -2360,8 +2360,7 @@ class SpectrumCanvas(FigureCanvas):
         self._cyh, = self.ax.plot([], [], color='#7fb87f', lw=0.6, ls=':',
                                    alpha=0.0, zorder=20)
 
-        self.ax.legend(fontsize=7, facecolor='#1a1a1a', edgecolor=BORDER,
-                       labelcolor=TEXT_MID, loc='upper right', ncol=2)
+        # Sin leyenda permanente — el texto "AVG" solo aparece mientras hay datos activos
         self.fig.patch.set_facecolor(BG_PANEL)
         self.mpl_connect('motion_notify_event', self._on_mouse_move)
         self.draw()
@@ -6064,16 +6063,15 @@ class MainWindow(QMainWindow):
         pass
 
     def _sync_splitter_for_ir(self):
-        """Adjust the two-slot splitter proportions based on IR visibility.
+        """Adjust the two-slot splitter proportions based on how many panels
+        are visible inside canvas_meas (slot1).
 
-        When IR is ON and a slot2 panel is visible:
-            slot1 = 60%  (IR≈20% + Magnitude≈40% of total)
-            slot2 = 40%  (Phase / RTA)
-        When IR is OFF:
-            slot1 = slot2 = 50%  (equal split)
+        3 panels (IR + TF + Phase): slot1 = 72%, slot2 = 28%
+        2 panels (IR + TF  or  IR + Phase): slot1 = 62%, slot2 = 38%
+        1 panel  (TF only  or  Phase only): slot1 = 55%, slot2 = 45%
 
         Has no effect when slot2 is not present (single-canvas layouts handle
-        IR proportions purely via matplotlib axis positioning).
+        proportions purely via matplotlib axis positioning).
         """
         if not hasattr(self, '_slot2_area') or not self._slot2_area.isVisible():
             return
@@ -6081,12 +6079,18 @@ class MainWindow(QMainWindow):
         total = sum(sizes) if sizes else self._panel_splitter.height()
         if total <= 0:
             return
-        ir_on = getattr(self, '_ir_visible', False)
-        if ir_on:
-            self._panel_splitter.setSizes([int(total * 0.60), int(total * 0.40)])
+
+        mode = getattr(self.canvas_meas, '_current_view_mode', 'magnitude_only')
+        _THREE = ('tf_phase_ir', 'magnitude_magnitude_ir')
+        _TWO   = ('tf_phase', 'magnitude_ir', 'phase_ir', 'magnitude_magnitude')
+        if mode in _THREE:
+            ratio = 0.72
+        elif mode in _TWO:
+            ratio = 0.62
         else:
-            half = total // 2
-            self._panel_splitter.setSizes([half, total - half])
+            ratio = 0.55
+
+        self._panel_splitter.setSizes([int(total * ratio), int(total * (1 - ratio))])
 
     def _toggle_ir_panel(self, *args):
         """Cmd+I — toggle IR independientemente del layout Magnitude/Phase."""
@@ -6227,6 +6231,9 @@ class MainWindow(QMainWindow):
         self.canvas_meas._slot2_type = self._panel2_type or 'phase'
         # Update panel label text on MeasurementCanvas panels
         self._update_panel_labels_from_types()
+        # Re-adjust splitter ratio for new panel count
+        from PyQt6.QtCore import QTimer as _QT
+        _QT.singleShot(40, self._sync_splitter_for_ir)
 
     def _ensure_in_main_area(self, wrap):
         """Move wrap to _main_area (QStackedWidget) if not already there, show it.
