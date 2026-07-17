@@ -783,92 +783,172 @@ class SpectrumEngineDialog(QDialog):
 
 class SpectrumEngineRow(QWidget):
     """
-    Fila de un Spectrum Engine — estilo SMAART.
-    ● | Nombre  | ▶/■ | ⚙ | ✕
-    ▶/■ activa / pausa la captura de ese engine.
-    Borde de color cuando está activo.
+    Card de Spectrum Engine — estilo idéntico a TFEngine.
+      ┌─────────────────────────────┐
+      │  ● Name          [⏸] [⚙] [✕] │
+      │  ████████████ (SPL bar)     │
+      └─────────────────────────────┘
+    Dot click → trace ON/OFF.  Right-click → color picker.
     """
 
     def __init__(self, idx, name, color, on_config, on_del, on_play,
-                 active=True, selected=False, parent=None):
+                 active=True, selected=False, on_trace_toggle=None, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(34)
-        self._color    = color
-        self._idx      = idx
-        self._active   = active
-        self._selected = selected
-        self._update_style()
+        self._color          = color
+        self._idx            = idx
+        self._active         = active
+        self._selected       = selected
+        self._trace_visible  = True
+        self._on_trace_cb    = on_trace_toggle  # callback(idx, visible)
 
-        h = QHBoxLayout(self)
-        h.setContentsMargins(5, 3, 5, 3)
-        h.setSpacing(4)
+        # ── Card con borde de color ───────────────────────────────────
+        self._card = QFrame()
+        self._card.setObjectName('spcard')
+        self._apply_card_style()
+        self._card.mousePressEvent = lambda e: None  # sin selección por ahora
 
-        # Dot de color
-        dot = QLabel('●')
-        dot.setFixedWidth(14)
-        dot.setStyleSheet(
-            f'color:{color};font-size:12px;background:transparent;border:none;')
-        h.addWidget(dot)
+        card_lay = QVBoxLayout(self._card)
+        card_lay.setContentsMargins(8, 6, 8, 6)
+        card_lay.setSpacing(5)
 
-        # Nombre del canal
-        self._lbl = QLabel(name[:20])
+        # ── Fila 1: dot | nombre | ⏸ | ⚙ | ✕ ───────────────────────
+        r1 = QHBoxLayout(); r1.setSpacing(6)
+
+        # Dot — trace ON/OFF (left) / color picker (right-click)
+        self._dot = QPushButton('●')
+        self._dot.setFixedSize(26, 26)
+        self._dot.setStyleSheet(
+            f'QPushButton{{color:{color};font-size:22px;background:transparent;'
+            f'border:none;padding:0;margin:0;}}'
+            f'QPushButton:hover{{color:#ffffff;}}')
+        self._dot.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._dot.setToolTip('Click: mostrar/ocultar trazo · Clic derecho: cambiar color')
+        self._dot.clicked.connect(self._on_toggle_trace)
+        self._dot.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._dot.customContextMenuRequested.connect(lambda _: self._on_pick_color())
+        r1.addWidget(self._dot)
+
+        # Nombre
+        self._lbl = QLabel(name[:24])
         self._lbl.setStyleSheet(
-            f'color:{TEXT_HI};font-size:10px;background:transparent;border:none;')
-        h.addWidget(self._lbl, stretch=1)
+            f'color:#cccccc;font-size:12px;font-weight:bold;background:transparent;')
+        r1.addWidget(self._lbl, stretch=1)
 
-        # Botón ▶ / ■  — activa/pausa el engine
-        self._btn_play = QPushButton('▶' if not active else '■')
-        self._btn_play.setFixedSize(22, 22)
-        _play_col = color if active else '#555'
+        # ▶ / ⏸  — medir / detener (trazo queda)
+        self._btn_play = QPushButton('⏸' if active else '▶')
+        self._btn_play.setFixedSize(26, 22)
+        self._btn_play.setCheckable(True)
+        self._btn_play.setChecked(active)
+        _pc = color if active else '#444444'
         self._btn_play.setStyleSheet(
-            f'QPushButton{{font-size:9px;padding:0;border:1px solid #333;'
-            f'background:transparent;color:{_play_col};border-radius:2px;}}'
-            f'QPushButton:hover{{color:{color};border-color:{color};}}')
+            f'QPushButton{{font-size:12px;padding:0;border:none;'
+            f'background:transparent;color:{_pc};}}'
+            f'QPushButton:checked{{color:{color};}}'
+            f'QPushButton:!checked{{color:#444444;}}')
         self._btn_play.clicked.connect(lambda: on_play(idx))
-        h.addWidget(self._btn_play)
+        r1.addWidget(self._btn_play)
 
-        # Botón ⚙ — abre configuración
+        # ⚙ config
         btn_cfg = QPushButton('⚙')
-        btn_cfg.setFixedSize(20, 22)
-        btn_cfg.setToolTip('Configure')
+        btn_cfg.setFixedSize(22, 22)
+        btn_cfg.setToolTip('Configurar engine')
         btn_cfg.setStyleSheet(
-            f'QPushButton{{font-size:10px;padding:0;border:1px solid #2a2a2a;'
-            f'background:transparent;color:#555;border-radius:2px;}}'
+            f'QPushButton{{font-size:12px;padding:0;border:1px solid #2a2a2a;'
+            f'background:transparent;color:#555;border-radius:3px;}}'
             f'QPushButton:hover{{color:{color};border-color:{color};}}')
         btn_cfg.clicked.connect(lambda: on_config(idx))
-        h.addWidget(btn_cfg)
+        r1.addWidget(btn_cfg)
 
-        # Botón ✕ — elimina
+        # ✕ eliminar
         btn_d = QPushButton('✕')
-        btn_d.setFixedSize(14, 22)
+        btn_d.setFixedSize(18, 22)
+        btn_d.setToolTip('Eliminar engine')
         btn_d.setStyleSheet(
-            'QPushButton{font-size:8px;padding:0;border:none;'
+            'QPushButton{font-size:10px;padding:0;border:none;'
             'background:transparent;color:#3a3a3a;}'
             'QPushButton:hover{color:#cc4444;}')
         btn_d.clicked.connect(lambda: on_del(idx))
-        h.addWidget(btn_d)
+        r1.addWidget(btn_d)
 
-    def _update_style(self):
-        border_col = self._color if self._active else '#252525'
-        self.setStyleSheet(
-            f'SpectrumEngineRow{{background:#161916;border:1px solid {border_col};'
-            f'border-radius:3px;}}'
+        card_lay.addLayout(r1)
+
+        # ── Fila 2: barra SPL ────────────────────────────────────────
+        _BAR_CSS = ('QProgressBar{background:#222;border:none;border-radius:2px;}'
+                    'QProgressBar::chunk{background:#4ab46a;border-radius:2px;}')
+        self.bar_spl = QProgressBar()
+        self.bar_spl.setRange(0, 100); self.bar_spl.setValue(0)
+        self.bar_spl.setTextVisible(False); self.bar_spl.setFixedHeight(6)
+        self.bar_spl.setStyleSheet(_BAR_CSS)
+        card_lay.addWidget(self.bar_spl)
+
+        # ── Layout raíz ──────────────────────────────────────────────
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 4)
+        root.setSpacing(0)
+        root.addWidget(self._card)
+
+    # ── Helpers ───────────────────────────────────────────────────────
+
+    def _apply_card_style(self):
+        border = self._color if self._active else f'{self._color}44'
+        self._card.setStyleSheet(
+            f'QFrame#spcard{{background:#161916;border:2px solid {border};'
+            f'border-radius:6px;}}'
             f'QLabel{{background:transparent;border:none;}}'
             f'QPushButton{{background:transparent;}}')
 
+    def _on_toggle_trace(self):
+        self._trace_visible = not self._trace_visible
+        dim = self._color if self._trace_visible else '#333333'
+        self._dot.setStyleSheet(
+            f'QPushButton{{color:{dim};font-size:22px;background:transparent;'
+            f'border:none;padding:0;margin:0;}}'
+            f'QPushButton:hover{{color:{self._color};}}')
+        if self._on_trace_cb is not None:
+            self._on_trace_cb(self._idx, self._trace_visible)
+
+    def _on_pick_color(self):
+        from PyQt6.QtWidgets import QColorDialog
+        from PyQt6.QtGui import QColor as _QColor
+        c = QColorDialog.getColor(_QColor(self._color), self, 'Color del Engine')
+        if c.isValid():
+            self._color = c.name()
+            self._dot.setStyleSheet(
+                f'QPushButton{{color:{self._color};font-size:22px;background:transparent;'
+                f'border:none;padding:0;margin:0;}}'
+                f'QPushButton:hover{{color:#ffffff;}}')
+            self._btn_play.setStyleSheet(
+                f'QPushButton{{font-size:12px;padding:0;border:none;'
+                f'background:transparent;color:{self._color};}}'
+                f'QPushButton:checked{{color:{self._color};}}'
+                f'QPushButton:!checked{{color:#444444;}}')
+            self._apply_card_style()
+
+    # ── API pública ───────────────────────────────────────────────────
+
+    def update_level(self, db: float):
+        pct = max(0, min(100, int((db + 80) / 80 * 100)))
+        self.bar_spl.setValue(pct)
+        # Color: green → yellow (≥−12 dB) → red (≥−3 dB)
+        if db >= -3.0:
+            chunk = '#ef5350'   # rojo — peak
+        elif db >= -12.0:
+            chunk = '#ffb74d'   # amarillo — warning
+        else:
+            chunk = '#4ab46a'   # verde — normal
+        self.bar_spl.setStyleSheet(
+            f'QProgressBar{{background:#222;border:none;border-radius:2px;}}'
+            f'QProgressBar::chunk{{background:{chunk};border-radius:2px;}}')
+
     def set_active(self, active: bool):
         self._active = active
-        self._btn_play.setText('■' if active else '▶')
-        col = self._color if active else '#555'
-        self._btn_play.setStyleSheet(
-            f'QPushButton{{font-size:9px;padding:0;border:1px solid #333;'
-            f'background:transparent;color:{col};border-radius:2px;}}'
-            f'QPushButton:hover{{color:{self._color};border-color:{self._color};}}')
-        self._update_style()
+        self._btn_play.setChecked(active)
+        self._btn_play.setText('⏸' if active else '▶')
+        self._apply_card_style()
 
     def set_selected(self, sel: bool):
         self._selected = sel
-        self._update_style()
+        self._apply_card_style()
 
 
 # ── Canvas de Medición (IR / TF+Coh / Phase) ─────────────────────────
@@ -1049,16 +1129,9 @@ class MeasurementCanvas(FigureCanvas):
         self._ir_visible   = True   # controlado por Cmd+I desde MainWindow
         self._ir_centered  = False  # False=raw(eje real) / True=centrado en pico (Find Delay)
 
-        gs = gridspec.GridSpec(
-            3, 1, figure=self.fig,
-            hspace=0.12,
-            left=0.07, right=0.935,
-            top=0.98, bottom=0.06,
-            height_ratios=[1.1, 2.2, 0.85]    # IR panel más grande
-        )
-
+        # Axes created with placeholder positions — _relayout() sets the real ones
         # ── IR ──
-        self.ax_ir = self.fig.add_subplot(gs[0])
+        self.ax_ir = self.fig.add_axes([0.07, 0.80, 0.865, 0.18])
         self.ax_ir.set_facecolor(BG_PLOT)
         self.ax_ir.set_xlim(-100, 100)   # siempre fijo, simétrico, NUNCA se mueve
         self.ax_ir.set_ylim(-1.1, 1.1)
@@ -1090,7 +1163,7 @@ class MeasurementCanvas(FigureCanvas):
         )
 
         # ── TF (izquierda) + Coherencia (derecha twinx) ──
-        self.ax_tf  = self.fig.add_subplot(gs[1])
+        self.ax_tf  = self.fig.add_axes([0.07, 0.26, 0.865, 0.52])
         self.ax_coh = self.ax_tf.twinx()
 
         self.ax_tf.set_facecolor(BG_PLOT)
@@ -1137,7 +1210,7 @@ class MeasurementCanvas(FigureCanvas):
         self._coh_fill    = None   # no fill
 
         # ── Phase ──  (fase envuelta −180…+180, estilo SMAART)
-        self.ax_ph = self.fig.add_subplot(gs[2])
+        self.ax_ph = self.fig.add_axes([0.07, 0.06, 0.865, 0.18])
         self.ax_ph.set_facecolor(BG_PLOT)
         self.ax_ph.set_ylim(-185, 185)
         # Panel inferior: muestra los labels de frecuencia en Hz/kHz
@@ -1173,232 +1246,145 @@ class MeasurementCanvas(FigureCanvas):
 
         self.fig.patch.set_facecolor(BG_PANEL)
         self.mpl_connect('motion_notify_event', self._on_mouse_move)
+        self._current_view_mode = 'tf_phase_ir'
+        self._relayout()
         self.draw()
+
+    # ── Layout engine — single source of truth for all axes positions ─
+
+    def _relayout(self):
+        """
+        Compute and apply all axes positions from scratch.
+        Called by set_view_mode() and resizeEvent().
+        Positions are in figure-normalized coords (0.0–1.0); they scale
+        automatically with the widget — no stale cached values.
+        """
+        if not hasattr(self, 'ax_ir'):
+            return
+
+        L, W  = 0.07, 0.865    # left margin, width  (right edge = L+W = 0.935)
+        B, T  = 0.06, 0.98     # bottom, top of usable area
+        GAP   = 0.025           # gap between stacked panels
+        avail = T - B           # 0.92 total usable height
+
+        # Panels ordered BOTTOM → TOP: [(name, proportion), ...]
+        # Proportions must sum to 1.0 per row.
+        _LAYOUTS = {
+            'magnitude_only':         [('tf', 1.00)],
+            'phase_only':             [('ph', 1.00)],
+            'tf_phase':               [('ph', 0.46), ('tf', 0.54)],
+            'magnitude_ir':           [('tf', 0.72), ('ir', 0.28)],
+            'phase_ir':               [('ph', 0.72), ('ir', 0.28)],
+            'tf_phase_ir':            [('ph', 0.36), ('tf', 0.44), ('ir', 0.20)],
+            'magnitude_magnitude':    [('ph', 0.46), ('tf', 0.54)],
+            'magnitude_magnitude_ir': [('ph', 0.30), ('tf', 0.50), ('ir', 0.20)],
+        }
+        mode   = getattr(self, '_current_view_mode', 'tf_phase_ir')
+        panels = _LAYOUTS.get(mode, _LAYOUTS['tf_phase_ir'])
+
+        # ── Visibility ────────────────────────────────────────────────
+        show_ir = any(n == 'ir' for n, _ in panels)
+        show_tf = any(n == 'tf' for n, _ in panels)
+        show_ph = any(n == 'ph' for n, _ in panels)
+        self.ax_ir.set_visible(show_ir)
+        self.ax_tf.set_visible(show_tf)
+        self.ax_coh.set_visible(show_tf)
+        self.ax_ph.set_visible(show_ph)
+        self._ir_visible = show_ir
+
+        # ── Positions — bottom-up ─────────────────────────────────────
+        n_gaps = len(panels) - 1
+        usable = avail - n_gaps * GAP
+        cur_b  = B
+        for name, ratio in panels:
+            h   = usable * ratio
+            pos = [L, cur_b, W, h]
+            if   name == 'ir': self.ax_ir.set_position(pos)
+            elif name == 'tf': self.ax_tf.set_position(pos); self.ax_coh.set_position(pos)
+            elif name == 'ph': self.ax_ph.set_position(pos)
+            cur_b += h + GAP
+
+        # ── X-axis tick labels — every visible frequency panel shows them ──
+        self.ax_tf.tick_params(axis='x', which='major', labelsize=7,
+                               colors='#9e9e9e', labelbottom=show_tf)
+        self.ax_ph.tick_params(axis='x', which='major', labelsize=7,
+                               colors='#9e9e9e', labelbottom=show_ph)
+
+        # ── Frequency (Hz) xlabel on bottommost visible frequency panel ──
+        if show_ph:
+            self.ax_ph.set_xlabel('Frequency (Hz)', fontsize=7,
+                                  color='#6a7a6a', labelpad=3)
+            self.ax_tf.set_xlabel('')
+        elif show_tf:
+            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=7,
+                                  color='#6a7a6a', labelpad=3)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'ax_ir'):
+            self._relayout()
 
     # ── Modos de vista (Magnitude completo / Phase-only) ──────────────
 
     def set_view_mode(self, mode: str):
         """
-        'tf_phase'       → Magnitude + Phase,          IR oculto
+        'tf_phase'       → Magnitude + Phase,          IR hidden
         'tf_phase_ir'    → IR + Magnitude + Phase       IR visible (20/40/40)
         'magnitude_only' → solo Magnitude,              IR oculto
         'magnitude_ir'   → IR + Magnitude solo          IR visible (30/70)
         'phase_only'     → solo Phase,                  IR oculto
         'phase_ir'       → IR + Phase solo              IR visible (30/70)
-        IR siempre controlado SOLO por Cmd+I — nunca por X/+ de los paneles.
+        IR always controlled by Cmd+I only — never by panel X/+ buttons.
+        Positions are computed entirely by _relayout() — no math here.
         """
-        # Guardar posiciones originales la primera vez (antes de cualquier cambio)
-        if not hasattr(self, '_saved_ax_pos'):
-            self._saved_ax_pos = {
-                'ir':  self.ax_ir.get_position().bounds,
-                'tf':  self.ax_tf.get_position().bounds,
-                'coh': self.ax_coh.get_position().bounds,
-                'ph':  self.ax_ph.get_position().bounds,
-            }
-
-        p = self._saved_ax_pos
-
-        # Restore ax_ph to phase mode when leaving magnitude_magnitude
-        if getattr(self, '_view_mag_mag', False) and mode != 'magnitude_magnitude':
+        # Restore ax_ph to phase mode when leaving magnitude_magnitude (any variant)
+        if getattr(self, '_view_mag_mag', False) and mode not in ('magnitude_magnitude',
+                                                                   'magnitude_magnitude_ir'):
             self._view_mag_mag = False
             self.ax_ph.set_ylim(-185, 185)
             self.ax_ph.set_ylabel('°', fontsize=7, color='#6a7a6a', labelpad=1)
             self.ax_ph.set_yticks([-180, -90, 0, 90, 180])
             self.ax_ph.tick_params(axis='y', labelsize=7, colors='#6a7a6a')
+
         self._current_view_mode = mode
 
-        if mode == 'tf_phase':
-            # TF (60%) arriba + Phase (40%) abajo — proporciones tipo SMAART
-            self.ax_ir.set_visible(False)
-            self.ax_ph.set_visible(True)
-            self.ax_tf.set_visible(True)
-            self.ax_coh.set_visible(True)
-            self._ir_visible = False
-            L = p['tf'][0];  W = p['tf'][2]
-            canvas_bottom = p['ph'][1]
-            canvas_top    = p['ir'][1] + p['ir'][3]
-            total_h = canvas_top - canvas_bottom
-            GAP     = 0.04   # espacio entre paneles (en fracción de figura)
-            ph_h    = (total_h - GAP) * 0.50   # 50/50 — igual que SMAART
-            tf_h    = (total_h - GAP) * 0.50
-            ph_b    = canvas_bottom
-            tf_b    = ph_b + ph_h + GAP
-            self.ax_tf.set_position( [L, tf_b, W, tf_h])
-            self.ax_coh.set_position([L, tf_b, W, tf_h])
-            self.ax_ph.set_position( [L, ph_b, W, ph_h])
-            # Mostrar eje X en ambos paneles
-            self.ax_tf.tick_params(labelbottom=True)
-            self.ax_ph.tick_params(labelbottom=True)
-            # Frequency label on Magnitude panel (independent panels need their own)
-            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
-            for ln in self._trace_ph_lines:
-                ln.set_visible(True)
-            if hasattr(self, '_smooth_btn'):
-                self._smooth_btn.setVisible(True)
-
-        elif mode == 'tf_phase_ir':
-            # IR (20%) arriba, Magnitude (40%) medio, Phase (40%) abajo
-            for ax in (self.ax_ir, self.ax_tf, self.ax_coh, self.ax_ph):
-                ax.set_visible(True)
-            L = p['tf'][0];  W = p['tf'][2]
-            canvas_bottom = p['ph'][1]
-            canvas_top    = p['ir'][1] + p['ir'][3]
-            total_h = canvas_top - canvas_bottom
-            GAP     = 0.03
-            usable  = total_h - 2 * GAP
-            ir_h    = usable * 0.20
-            tf_h    = usable * 0.40
-            ph_h    = usable * 0.40
-            ph_b    = canvas_bottom
-            tf_b    = ph_b + ph_h + GAP
-            ir_b    = tf_b + tf_h + GAP
-            self.ax_ir.set_position( [L, ir_b, W, ir_h])
-            self.ax_tf.set_position( [L, tf_b, W, tf_h])
-            self.ax_coh.set_position([L, tf_b, W, tf_h])
-            self.ax_ph.set_position( [L, ph_b, W, ph_h])
-            # Restore Hz tick labels on ax_tf (log scale can reset formatter)
-            self.ax_tf.tick_params(labelbottom=True)
-            self.ax_tf.set_xlabel('')   # Phase (bottom) carries the label
-            _maj = [20,50,100,200,500,1000,2000,5000,10000,20000]
-            _lbl = ['20 Hz','50 Hz','100 Hz','200 Hz','500 Hz',
-                    '1 kHz','2 kHz','5 kHz','10 kHz','20 kHz']
-            self.ax_tf.set_xticks(_maj)
-            self.ax_tf.set_xticklabels(_lbl, fontsize=7, color='#9e9e9e')
-            for ln in self._trace_ph_lines:
-                ln.set_visible(True)
-            self._ir_visible = True
-            if hasattr(self, '_smooth_btn'):
-                self._smooth_btn.setVisible(True)
-
-        elif mode == 'magnitude_only':
-            # Solo TF+Coh — sin IR, sin Phase, expandido al canvas completo
-            self.ax_ir.set_visible(False)
-            self.ax_ph.set_visible(False)
-            self.ax_tf.set_visible(True)
-            self.ax_coh.set_visible(True)
-            self._ir_visible = False
-            new_tf_b = p['ph'][1]
-            new_tf_h = (p['ir'][1] + p['ir'][3]) - p['ph'][1]
-            self.ax_tf.set_position( [p['tf'][0], new_tf_b, p['tf'][2], new_tf_h])
-            self.ax_coh.set_position([p['tf'][0], new_tf_b, p['tf'][2], new_tf_h])
-            self.ax_tf.tick_params(labelbottom=True)
-            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
-            if hasattr(self, '_smooth_btn'):
-                self._smooth_btn.setVisible(True)
-
-        elif mode == 'phase_only':
-            for ax in (self.ax_ir, self.ax_tf, self.ax_coh):
-                ax.set_visible(False)
-            self.ax_ph.set_visible(True)
-            self.ax_ph.set_position([0.07, 0.06, 0.865, 0.92])
-            for ln in self._trace_ph_lines:
-                ln.set_visible(True)
-            self._ir_visible = False
-            if hasattr(self, '_smooth_btn'):
-                self._smooth_btn.setVisible(False)
-
-        elif mode == 'magnitude_ir':
-            # IR (33%) arriba + Magnitude (67%) abajo — sin Phase
-            # Con splitter 60/40 esto resulta en 20%/40%/40% del total de la ventana
-            self.ax_ir.set_visible(True)
-            self.ax_tf.set_visible(True)
-            self.ax_coh.set_visible(True)
-            self.ax_ph.set_visible(False)
-            self._ir_visible = True
-            L = p['tf'][0];  W = p['tf'][2]
-            canvas_bottom = p['ph'][1]
-            canvas_top    = p['ir'][1] + p['ir'][3]
-            total_h = canvas_top - canvas_bottom
-            GAP  = 0.03
-            ir_h = (total_h - GAP) * 0.333
-            tf_h = (total_h - GAP) * 0.667
-            tf_b = canvas_bottom
-            ir_b = tf_b + tf_h + GAP
-            self.ax_ir.set_position( [L, ir_b, W, ir_h])
-            self.ax_tf.set_position( [L, tf_b, W, tf_h])
-            self.ax_coh.set_position([L, tf_b, W, tf_h])
-            self.ax_tf.tick_params(labelbottom=True)
-            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
-            _maj = [20,50,100,200,500,1000,2000,5000,10000,20000]
-            _lbl = ['20 Hz','50 Hz','100 Hz','200 Hz','500 Hz',
-                    '1 kHz','2 kHz','5 kHz','10 kHz','20 kHz']
-            self.ax_tf.set_xticks(_maj)
-            self.ax_tf.set_xticklabels(_lbl, fontsize=7, color='#9e9e9e')
-            if hasattr(self, '_smooth_btn'):
-                self._smooth_btn.setVisible(True)
-
-        elif mode == 'phase_ir':
-            # IR (30%) arriba + Phase (70%) abajo — sin Magnitude
-            self.ax_ir.set_visible(True)
-            self.ax_tf.set_visible(False)
-            self.ax_coh.set_visible(False)
-            self.ax_ph.set_visible(True)
-            self._ir_visible = True
-            L = p['tf'][0];  W = p['tf'][2]
-            canvas_bottom = p['ph'][1]
-            canvas_top    = p['ir'][1] + p['ir'][3]
-            total_h = canvas_top - canvas_bottom
-            GAP  = 0.03
-            ir_h = (total_h - GAP) * 0.30
-            ph_h = (total_h - GAP) * 0.70
-            ph_b = canvas_bottom
-            ir_b = ph_b + ph_h + GAP
-            self.ax_ir.set_position([L, ir_b, W, ir_h])
-            self.ax_ph.set_position([L, ph_b, W, ph_h])
-            for ln in self._trace_ph_lines:
-                ln.set_visible(True)
-            if hasattr(self, '_smooth_btn'):
-                self._smooth_btn.setVisible(False)
-
-        elif mode == 'magnitude_magnitude':
-            # Both top and bottom show magnitude — ax_ph repurposed as second magnitude panel
-            self.ax_ir.set_visible(False)
-            self.ax_ph.set_visible(True)
-            self.ax_tf.set_visible(True)
-            self.ax_coh.set_visible(True)
-            self._ir_visible = False
+        # ── magnitude_magnitude[_ir]: reconfigure ax_ph as a second magnitude axis ──
+        if mode in ('magnitude_magnitude', 'magnitude_magnitude_ir'):
             self._view_mag_mag = True
-            # Layout: 50/50 identical to tf_phase
-            L = p['tf'][0];  W = p['tf'][2]
-            canvas_bottom = p['ph'][1]
-            canvas_top    = p['ir'][1] + p['ir'][3]
-            total_h = canvas_top - canvas_bottom
-            GAP     = 0.04
-            ph_h    = (total_h - GAP) * 0.50
-            tf_h    = (total_h - GAP) * 0.50
-            ph_b    = canvas_bottom
-            tf_b    = ph_b + ph_h + GAP
-            self.ax_tf.set_position( [L, tf_b, W, tf_h])
-            self.ax_coh.set_position([L, tf_b, W, tf_h])
-            self.ax_ph.set_position( [L, ph_b, W, ph_h])
-            # Configure ax_ph to look like a second magnitude panel
             _ymin, _ymax = self.ax_tf.get_ylim()
-            # Set yticks BEFORE ylim to prevent matplotlib auto-expanding the range
-            _step = 6 if (_ymax - _ymin) <= 36 else 12
+            _step   = 6 if (_ymax - _ymin) <= 36 else 12
             _yticks = [v for v in range(int(_ymin) - _step, int(_ymax) + _step + 1, _step)
                        if _ymin <= v <= _ymax]
             self.ax_ph.set_yticks(_yticks)
-            self.ax_ph.set_ylim(_ymin, _ymax)   # AFTER set_yticks — prevents auto-expansion
+            self.ax_ph.set_ylim(_ymin, _ymax)
             self.ax_ph.set_ylabel('dB', fontsize=7, color='#6a7a6a', labelpad=1)
             self.ax_ph.set_yscale('linear')
             self.ax_ph.tick_params(axis='y', labelsize=7, colors='#6a7a6a')
-            self.ax_tf.tick_params(labelbottom=True)
-            self.ax_ph.tick_params(labelbottom=True)
-            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
-            self.ax_ph.set_xlabel('Frequency (Hz)', fontsize=7, color='#6a7a6a', labelpad=3)
-            if hasattr(self, '_smooth_btn'):
-                self._smooth_btn.setVisible(True)
 
-        # Update X/+ corner buttons — IR never affects this logic
-        _m = self._current_view_mode
+        # ── Phase trace lines visibility ──
+        show_ph_lines = mode in ('tf_phase', 'tf_phase_ir', 'phase_only',
+                                 'phase_ir', 'magnitude_magnitude',
+                                 'magnitude_magnitude_ir')
+        for ln in self._trace_ph_lines:
+            ln.set_visible(show_ph_lines)
+
+        # ── Smooth button visibility ──
+        if hasattr(self, '_smooth_btn'):
+            self._smooth_btn.setVisible(
+                mode in ('tf_phase', 'tf_phase_ir', 'magnitude_only',
+                         'magnitude_ir', 'magnitude_magnitude',
+                         'magnitude_magnitude_ir'))
+
+        # ── Corner +/✕ buttons ──
         if hasattr(self, '_mag_close_btn'):
-            # ✕ = Magnitude visible alongside Phase → can remove it
-            # ＋ = Magnitude is the only visible panel (or not visible) → can add Phase
-            mag_dual = _m in ('tf_phase', 'tf_phase_ir')
+            mag_dual = mode in ('tf_phase', 'tf_phase_ir')
             self._mag_close_btn.setText('✕' if mag_dual else '＋')
         if hasattr(self, '_ph_close_btn'):
-            ph_dual = _m in ('tf_phase', 'tf_phase_ir')
+            ph_dual = mode in ('tf_phase', 'tf_phase_ir')
             self._ph_close_btn.setText('✕' if ph_dual else '＋')
+
+        # ── Layout: positions + visibility computed here ──
+        self._relayout()
 
         self.draw_idle()
         if hasattr(self, '_smooth_btn') or hasattr(self, '_mag_lbl'):
@@ -3057,7 +3043,8 @@ class TFEngine(QWidget):
     def __init__(self, number: int, color: str,
                  on_channels_changed, on_remove, on_find_delay,
                  on_select=None, on_normalize=None, on_active_changed=None,
-                 on_color_changed=None, name: str = '', parent=None):
+                 on_color_changed=None, on_trace_toggle=None, on_config=None,
+                 name: str = '', parent=None):
         super().__init__(parent)
         self._color              = color
         self._number             = number
@@ -3065,8 +3052,11 @@ class TFEngine(QWidget):
         self._delay_comp_ms      = 0.0
         self._active             = False   # inicia inactivo; el usuario presiona ▶
         self._selected           = False
+        self._trace_visible      = True    # dot toggle: muestra/oculta trazo
         self._on_active_changed  = on_active_changed   # callback(idx, active)
         self._on_color_changed   = on_color_changed    # callback(idx, color_hex)
+        self._on_trace_toggle    = on_trace_toggle     # callback(idx, visible)
+        self._on_config_cb       = on_config           # callback(idx)
         self._gain_offset_db = 0.0
         self._on_select_cb   = on_select
         self._on_norm_cb     = on_normalize
@@ -3092,16 +3082,18 @@ class TFEngine(QWidget):
         # ── Fila 1: ● color  N  |  ▶  ✕ ─────────────────────────────
         r1 = QHBoxLayout(); r1.setSpacing(6)
 
-        # Círculo de color — clickeable para abrir color picker
+        # Círculo de color — click = trace ON/OFF · right-click = color picker
         dot = QPushButton('●')
         dot.setStyleSheet(
-            f'QPushButton{{color:{color};font-size:18px;background:transparent;'
+            f'QPushButton{{color:{color};font-size:22px;background:transparent;'
             f'border:none;padding:0;margin:0;}}'
             f'QPushButton:hover{{color:#ffffff;}}')
-        dot.setFixedSize(22, 22)
+        dot.setFixedSize(26, 26)
         dot.setCursor(Qt.CursorShape.PointingHandCursor)
-        dot.setToolTip('Cambiar color del engine')
-        dot.clicked.connect(self._on_pick_color)
+        dot.setToolTip('Click: mostrar/ocultar trazo · Clic derecho: cambiar color')
+        dot.clicked.connect(self._on_toggle_trace)
+        dot.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        dot.customContextMenuRequested.connect(lambda _: self._on_pick_color())
         self._dot = dot
         r1.addWidget(dot)
 
@@ -3126,87 +3118,100 @@ class TFEngine(QWidget):
         self.btn_play.clicked.connect(self._on_toggle_active)
         r1.addWidget(self.btn_play)
 
-        # Botón remove (pequeño círculo gris)
-        btn_rm = QPushButton('●')
-        btn_rm.setFixedSize(16, 16)
+        # Botón ⚙ — abre configuración del engine
+        btn_cfg = QPushButton('⚙')
+        btn_cfg.setFixedSize(22, 22)
+        btn_cfg.setToolTip('Configurar engine')
+        btn_cfg.setStyleSheet(
+            f'QPushButton{{font-size:12px;padding:0;border:1px solid #2a2a2a;'
+            f'background:transparent;color:#555;border-radius:3px;}}'
+            f'QPushButton:hover{{color:{color};border-color:{color};}}')
+        btn_cfg.clicked.connect(lambda: self._on_config_cb(self._number - 1)
+                                if self._on_config_cb else None)
+        r1.addWidget(btn_cfg)
+
+        # Botón ✕ — elimina engine
+        btn_rm = QPushButton('✕')
+        btn_rm.setFixedSize(18, 22)
+        btn_rm.setToolTip('Eliminar engine')
         btn_rm.setStyleSheet(
-            'QPushButton{font-size:9px;padding:0;border:none;'
-            'background:transparent;color:#333333;}'
-            'QPushButton:hover{color:#666666;}')
+            'QPushButton{font-size:10px;padding:0;border:none;'
+            'background:transparent;color:#3a3a3a;}'
+            'QPushButton:hover{color:#cc4444;}')
         btn_rm.clicked.connect(on_remove)
         r1.addWidget(btn_rm)
 
         card_lay.addLayout(r1)
 
-        # ── Fila 2: M bars + valor ────────────────────────────────────
-        r2 = QHBoxLayout(); r2.setSpacing(6)
+        # ── Fila 2: M + R bars (ambas verdes) ───────────────────────────
+        _BAR_GREEN = '#4ab46a'
+        _BAR_CSS   = (f'QProgressBar{{background:#222;border:none;border-radius:2px;}}'
+                      f'QProgressBar::chunk{{background:{_BAR_GREEN};border-radius:2px;}}')
 
+        r2 = QHBoxLayout(); r2.setSpacing(4)
+
+        bars_col = QVBoxLayout(); bars_col.setSpacing(4)
+
+        row_m = QHBoxLayout(); row_m.setSpacing(4)
         lbl_m = QLabel('M')
         lbl_m.setFixedWidth(10)
         lbl_m.setStyleSheet(f'color:{TEXT_DIM};font-size:8px;background:transparent;')
-        r2.addWidget(lbl_m)
-
-        bars_col = QVBoxLayout(); bars_col.setSpacing(3)
         self.bar_m = QProgressBar()
         self.bar_m.setRange(0, 100); self.bar_m.setValue(0)
-        self.bar_m.setTextVisible(False); self.bar_m.setFixedHeight(4)
-        self.bar_m.setStyleSheet(
-            f'QProgressBar{{background:#222;border:none;border-radius:2px;}}'
-            f'QProgressBar::chunk{{background:{color};border-radius:2px;}}')
-        bars_col.addWidget(self.bar_m)
+        self.bar_m.setTextVisible(False); self.bar_m.setFixedHeight(6)
+        self.bar_m.setStyleSheet(_BAR_CSS)
+        row_m.addWidget(lbl_m); row_m.addWidget(self.bar_m)
+        bars_col.addLayout(row_m)
 
-        self.bar_r = QProgressBar()
-        self.bar_r.setRange(0, 100); self.bar_r.setValue(0)
-        self.bar_r.setTextVisible(False); self.bar_r.setFixedHeight(4)
-        self.bar_r.setStyleSheet(
-            'QProgressBar{background:#222;border:none;border-radius:2px;}'
-            'QProgressBar::chunk{background:#555;border-radius:2px;}')
-        bars_col.addWidget(self.bar_r)
-        r2.addLayout(bars_col, stretch=1)
-
-        self.lbl_db = QLabel('—')
-        self.lbl_db.setFixedWidth(46)
-        self.lbl_db.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.lbl_db.setStyleSheet(
-            f'color:#cccccc;font-size:11px;font-weight:bold;background:transparent;')
-        r2.addWidget(self.lbl_db)
-
-        card_lay.addLayout(r2)
-
-        # ── Fila 3: R label + delay info ─────────────────────────────
-        r3 = QHBoxLayout(); r3.setSpacing(6)
-
+        row_r = QHBoxLayout(); row_r.setSpacing(4)
         lbl_r = QLabel('R')
         lbl_r.setFixedWidth(10)
         lbl_r.setStyleSheet(f'color:{TEXT_DIM};font-size:8px;background:transparent;')
-        r3.addWidget(lbl_r)
+        self.bar_r = QProgressBar()
+        self.bar_r.setRange(0, 100); self.bar_r.setValue(0)
+        self.bar_r.setTextVisible(False); self.bar_r.setFixedHeight(6)
+        self.bar_r.setStyleSheet(_BAR_CSS)
+        row_r.addWidget(lbl_r); row_r.addWidget(self.bar_r)
+        bars_col.addLayout(row_r)
+
+        r2.addLayout(bars_col, stretch=1)
+
+        self.lbl_db = QLabel('—')   # oculto — referencia interna para compatibilidad
+        self.lbl_db.hide()
+
+        card_lay.addLayout(r2)
+
+        # ── Fila 3: delay info ────────────────────────────────────────
+        r3 = QHBoxLayout(); r3.setSpacing(6)
 
         self.lbl_delay = QLabel('—')
         self.lbl_delay.setStyleSheet(
-            f'color:{TEXT_DIM};font-size:8px;background:transparent;')
+            'color:#8ab48a;font-size:12px;background:transparent;'
+            'font-family:monospace;')
         self.lbl_delay.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         r3.addWidget(self.lbl_delay, stretch=1)
+
+        # Botón delay finder — círculo pequeño entre delay y norm
+        btn_find = QPushButton('●')
+        btn_find.setFixedSize(18, 18)
+        btn_find.setStyleSheet(
+            'QPushButton{font-size:10px;padding:0;border:1px solid #2a5a5a;'
+            'color:#3a9a9a;background:transparent;border-radius:9px;}'
+            'QPushButton:hover{border-color:#4acaca;color:#4acaca;}')
+        btn_find.setToolTip('Delay Finder')
+        btn_find.clicked.connect(on_find_delay)
+        r3.addWidget(btn_find)
 
         # Botón NORM (normaliza la TF a 0 dB en banda de referencia)
         if on_normalize is not None:
             btn_norm = QPushButton('norm')
-            btn_norm.setFixedHeight(14)
+            btn_norm.setFixedHeight(18)
             btn_norm.setStyleSheet(
-                'QPushButton{font-size:7px;padding:0 4px;border:1px solid #2a4a3a;'
-                'color:#3a6a4a;background:transparent;border-radius:2px;}'
+                'QPushButton{font-size:9px;padding:2px 7px;border:1px solid #2a4a3a;'
+                'color:#3a6a4a;background:transparent;border-radius:3px;}'
                 'QPushButton:hover{border-color:#4a9a6a;color:#4a9a6a;}')
             btn_norm.clicked.connect(on_normalize)
             r3.addWidget(btn_norm)
-
-        # Botón delay (pequeño, discreto)
-        btn_find = QPushButton('delay')
-        btn_find.setFixedHeight(14)
-        btn_find.setStyleSheet(
-            'QPushButton{font-size:7px;padding:0 5px;border:1px solid #2a3a3a;'
-            'color:#3a7a7a;background:transparent;border-radius:2px;}'
-            'QPushButton:hover{border-color:#4a9a9a;color:#4a9a9a;}')
-        btn_find.clicked.connect(on_find_delay)
-        r3.addWidget(btn_find)
 
         card_lay.addLayout(r3)
 
@@ -3217,6 +3222,18 @@ class TFEngine(QWidget):
         root.addWidget(self._card)
 
     # ── Slots ─────────────────────────────────────────────────────────
+
+    def _on_toggle_trace(self):
+        """Dot click — apaga/prende el trazo en el canvas."""
+        self._trace_visible = not self._trace_visible
+        # Dim dot color when trace is off — no GraphicsEffect (evita freeze)
+        dim_color = self._color if self._trace_visible else '#333333'
+        self._dot.setStyleSheet(
+            f'QPushButton{{color:{dim_color};font-size:22px;background:transparent;'
+            f'border:none;padding:0;margin:0;}}'
+            f'QPushButton:hover{{color:{self._color};}}')
+        if self._on_trace_toggle is not None:
+            self._on_trace_toggle(self._number - 1, self._trace_visible)
 
     def _on_toggle_active(self, checked: bool):
         self._active = checked
@@ -3245,7 +3262,7 @@ class TFEngine(QWidget):
         self._color = color
         # Dot
         self._dot.setStyleSheet(
-            f'QPushButton{{color:{color};font-size:18px;background:transparent;'
+            f'QPushButton{{color:{color};font-size:22px;background:transparent;'
             f'border:none;padding:0;margin:0;}}'
             f'QPushButton:hover{{color:#ffffff;}}')
         # Card — respeta si está seleccionado o no
@@ -3257,10 +3274,7 @@ class TFEngine(QWidget):
             self._card.setStyleSheet(
                 f'QFrame#tfcard{{background:#161919;border:2px solid {color}55;'
                 f'border-radius:6px;}}')
-        # Barra M y botón play
-        self.bar_m.setStyleSheet(
-            f'QProgressBar{{background:#222;border:none;border-radius:2px;}}'
-            f'QProgressBar::chunk{{background:{color};border-radius:2px;}}')
+        # Botón play (barra M queda verde fija, no cambia con color del engine)
         self.btn_play.setStyleSheet(
             f'QPushButton{{font-size:11px;padding:0;border:none;'
             f'background:transparent;color:{color};}}'
@@ -3282,8 +3296,16 @@ class TFEngine(QWidget):
 
     def update_levels(self, m_db: float, r_db: float):
         def _pct(db): return max(0, min(100, int((db + 80) / 80 * 100)))
-        self.bar_m.setValue(_pct(m_db))
-        self.bar_r.setValue(_pct(r_db))
+        def _color(db):
+            if db >= -3.0:   return '#ef5350'   # rojo — peak
+            if db >= -12.0:  return '#ffb74d'   # amarillo — warning
+            return '#4ab46a'                     # verde — normal
+        def _bar_css(db):
+            c = _color(db)
+            return (f'QProgressBar{{background:#222;border:none;border-radius:2px;}}'
+                    f'QProgressBar::chunk{{background:{c};border-radius:2px;}}')
+        self.bar_m.setValue(_pct(m_db)); self.bar_m.setStyleSheet(_bar_css(m_db))
+        self.bar_r.setValue(_pct(r_db)); self.bar_r.setStyleSheet(_bar_css(r_db))
         self.lbl_db.setText(f'{m_db:.2f}')
 
     def set_delay(self, ms: float):
@@ -3567,9 +3589,9 @@ class MainWindow(QMainWindow):
 
         # Splitter vertical — soporta 1 o 2 paneles
         self._panel_splitter = QSplitter(Qt.Orientation.Vertical)
-        self._panel_splitter.setHandleWidth(4)
+        self._panel_splitter.setHandleWidth(1)
         self._panel_splitter.setStyleSheet(
-            'QSplitter::handle{background:#1e2e1e;}'
+            'QSplitter::handle{background:#0d0d0d;}'
             'QSplitter::handle:hover{background:#3a5a3a;}')
         self._panel_splitter.addWidget(self._main_area)
 
@@ -4586,23 +4608,23 @@ class MainWindow(QMainWindow):
         btn_add.clicked.connect(self._show_new_tf_dialog)
         layout.addWidget(btn_add)
 
-        # Botón AVG — promedio de todos los engines activos
-        _avg_on_style  = (f'QPushButton{{font-size:10px;color:#e0e0e0;font-weight:bold;'
-                          f'background:#1e2a1e;border:1px solid #3cf53c;'
-                          f'border-radius:4px;padding:4px 0;letter-spacing:1px;}}'
-                          f'QPushButton:hover{{background:#253325;}}')
-        _avg_off_style = (f'QPushButton{{font-size:10px;color:{TEXT_DIM};'
-                          f'background:#1a1a1a;border:1px solid #333;'
-                          f'border-radius:4px;padding:4px 0;letter-spacing:1px;}}'
-                          f'QPushButton:hover{{background:#222;color:{TEXT_MID};}}')
-        self.btn_show_avg = QPushButton('⊘  AVG')
+        # Botón AVG — creación con estilo prominente (se añade al layout abajo)
+        _avg_on_style  = (f'QPushButton{{font-size:12px;color:#6ade8a;font-weight:bold;'
+                          f'background:#1a3a1a;border:2px solid #4ab46a;'
+                          f'border-radius:5px;padding:8px 0;letter-spacing:1px;}}'
+                          f'QPushButton:hover{{background:#1e4a1e;}}')
+        _avg_off_style = (f'QPushButton{{font-size:12px;color:{TEXT_DIM};'
+                          f'background:#111a11;border:2px solid #2a5a2a;'
+                          f'border-radius:5px;padding:8px 0;letter-spacing:1px;}}'
+                          f'QPushButton:hover{{background:#141e14;color:{TEXT_MID};}}')
+        self.btn_show_avg = QPushButton('● AVG')
         self.btn_show_avg.setCheckable(True)
         self.btn_show_avg.setChecked(False)
         self._show_avg = False
         self.btn_show_avg.setStyleSheet(_avg_off_style)
         def _toggle_avg(checked):
             self._show_avg = checked
-            self.btn_show_avg.setText('◎  AVG' if checked else '⊘  AVG')
+            self.btn_show_avg.setText('● AVG')
             self.btn_show_avg.setStyleSheet(_avg_on_style if checked else _avg_off_style)
             if not checked:
                 self.canvas_meas.update_avg(None, None, None, None)
@@ -4614,28 +4636,14 @@ class MainWindow(QMainWindow):
             if self._secondary_panel is not None:
                 self._secondary_panel.canvas_meas.highlight_engine(idx, show_avg=checked)
         self.btn_show_avg.clicked.connect(_toggle_avg)
-        layout.addWidget(self.btn_show_avg)
+        # (btn_show_avg se añade al layout en la zona inferior — ver abajo)
 
-        # Config hint — configuración de canales en el dialog
-        btn_tf_cfg = QPushButton('⊞  TF ENGINE CONFIG…')
-        btn_tf_cfg.setStyleSheet(
-            f'font-size:8px;color:{TEXT_DIM};background:transparent;'
-            f'border:none;text-align:left;padding:1px 2px;')
-        btn_tf_cfg.clicked.connect(self._show_tf_engine_config)
-        layout.addWidget(btn_tf_cfg)
-
-        layout.addWidget(sep())
-
-        # ── SMOOTH ────────────────────────────────────────────────────────
-        sm_row = QHBoxLayout(); sm_row.setSpacing(6)
-        sm_row.addWidget(lbl('Smooth:', color=TEXT_MID, size=10))
+        # cmb_smooth — mantenido por compatibilidad, sin fila visible en UI
         self.cmb_smooth = QComboBox()
         for _s in ['OFF', '1/3', '1/6', '1/12', '1/24']:
             self.cmb_smooth.addItem(_s)
         self.cmb_smooth.setCurrentIndex(3)   # 1/12 oct por defecto
         self._smooth_values = [0, 3, 6, 12, 24]
-        sm_row.addWidget(self.cmb_smooth, stretch=1)
-        layout.addLayout(sm_row)
 
         # ── γ² DISPLAY + THRESHOLD ────────────────────────────────────────
         g2_row = QHBoxLayout(); g2_row.setSpacing(4)
@@ -4650,7 +4658,7 @@ class MainWindow(QMainWindow):
         self.spn_thresh.setDecimals(2); self.spn_thresh.setSingleStep(0.05)
         self.spn_thresh.setFixedWidth(54)
         g2_row.addWidget(self.spn_thresh)
-        layout.addLayout(g2_row)
+        # (g2_row se añade al layout en la zona inferior — ver abajo)
         self.lbl_coh_full    = self.lbl_gamma2
         self.lbl_gamma2_mark = QLabel()
         self.bar_coh         = QProgressBar()
@@ -4669,6 +4677,11 @@ class MainWindow(QMainWindow):
         layout.addLayout(vt_row)
 
         layout.addStretch()
+
+        # ── ZONA INFERIOR: γ² + AVG prominente ───────────────────────────
+        layout.addWidget(sep())
+        layout.addLayout(g2_row)
+        layout.addWidget(self.btn_show_avg)
 
         # ── Atributos de compatibilidad — NO en layout ─────────────────────
         self.cmb_dev_in  = QComboBox()
@@ -5009,10 +5022,13 @@ class MainWindow(QMainWindow):
         def _on_nrm(): self._normalize_engine(self._tf_engines.index(eng))
         def _on_act(ei, active): self._on_engine_active_changed(ei, active)
         def _on_col(ei, col): self._on_engine_color_changed(ei, col)
+        def _on_tr(ei, visible): self.canvas_meas.set_trace_visible(ei, visible)
+        def _on_cfg(ei): self._open_tf_engine_config(ei)
 
         eng = TFEngine(idx + 1, color, _on_ch, _on_rm, _on_fd,
                        on_select=_on_sel, on_normalize=_on_nrm,
                        on_active_changed=_on_act, on_color_changed=_on_col,
+                       on_trace_toggle=_on_tr, on_config=_on_cfg,
                        name=name, parent=None)
         eng.spn_m.setValue(ch_m)
         eng.spn_r.setValue(ch_r)
@@ -5091,7 +5107,10 @@ class MainWindow(QMainWindow):
             if w:
                 w.setParent(None)
                 w.deleteLater()
+        self._sp_eng_rows = []
         for i, eng in enumerate(self._sp_engines):
+            def _on_sp_tr(ei, visible, _c=i):
+                self.canvas_spec.set_trace_visible(ei, visible)
             row = SpectrumEngineRow(
                 idx=i,
                 name=eng.get('name', f'Analog {eng.get("ch", i+1)}'),
@@ -5101,7 +5120,9 @@ class MainWindow(QMainWindow):
                 on_play=self._toggle_sp_engine_active,
                 active=eng.get('active', True),
                 selected=(i == getattr(self, '_sp_eng_selected', 0)),
+                on_trace_toggle=_on_sp_tr,
             )
+            self._sp_eng_rows.append(row)
             lay.insertWidget(lay.count() - 1, row)
 
     def _add_spectrum_engine(self, ch: int = None, color: str = None,
@@ -5159,6 +5180,7 @@ class MainWindow(QMainWindow):
             if not self.engine.running:
                 try:
                     self.engine.start()
+                    self._post_start_check()
                 except Exception as exc:
                     self.sb.showMessage(f'⚠  Error opening stream: {exc}', 8000)
                     return
@@ -5212,6 +5234,65 @@ class MainWindow(QMainWindow):
             on_create=_on_create,
             parent=self,
         )
+        dlg.exec()
+
+    def _open_tf_engine_config(self, idx: int):
+        """Dialog rápido para editar nombre y canales de un TF engine."""
+        if idx < 0 or idx >= len(self._tf_engines):
+            return
+        eng = self._tf_engines[idx]
+
+        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout,
+                                     QLabel, QLineEdit, QSpinBox, QPushButton,
+                                     QGridLayout)
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f'Configure TF Engine {idx + 1}')
+        dlg.setModal(True)
+        dlg.setFixedWidth(300)
+        dlg.setStyleSheet(
+            f'QDialog{{background:#1a1a1a;color:#cccccc;font-size:11px;}}'
+            f'QLabel{{color:#888;background:transparent;}}'
+            f'QLineEdit{{background:#252525;color:#cccccc;border:1px solid #3a3a3a;'
+            f'border-radius:3px;padding:4px 6px;}}'
+            f'QSpinBox{{background:#252525;color:#cccccc;border:1px solid #3a3a3a;'
+            f'border-radius:3px;padding:3px 4px;}}'
+            f'QPushButton{{background:#2e2e2e;color:#cccccc;border:1px solid #444;'
+            f'border-radius:3px;padding:5px 14px;}}'
+            f'QPushButton:hover{{border-color:#4ab46a;color:#4ab46a;}}')
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(18, 16, 18, 14)
+        lay.setSpacing(12)
+
+        grid = QGridLayout(); grid.setSpacing(8); grid.setColumnMinimumWidth(0, 60)
+        grid.setColumnStretch(1, 1)
+
+        txt_name = QLineEdit(eng._name)
+        grid.addWidget(QLabel('Name'), 0, 0); grid.addWidget(txt_name, 0, 1)
+
+        spn_m = QSpinBox(); spn_m.setRange(1, 32); spn_m.setValue(eng.spn_m.value())
+        grid.addWidget(QLabel('Meas ch'), 1, 0); grid.addWidget(spn_m, 1, 1)
+
+        spn_r = QSpinBox(); spn_r.setRange(1, 32); spn_r.setValue(eng.spn_r.value())
+        grid.addWidget(QLabel('Ref ch'), 2, 0); grid.addWidget(spn_r, 2, 1)
+
+        lay.addLayout(grid)
+
+        btns = QHBoxLayout(); btns.setSpacing(8)
+        btn_cancel = QPushButton('Cancel'); btn_save = QPushButton('Save')
+        btns.addWidget(btn_cancel); btns.addWidget(btn_save)
+        lay.addLayout(btns)
+
+        btn_cancel.clicked.connect(dlg.reject)
+        def _save():
+            eng._name = txt_name.text().strip() or eng._name
+            eng._name_lbl.setText(eng._name)
+            eng.spn_m.setValue(spn_m.value())
+            eng.spn_r.setValue(spn_r.value())
+            self._on_channels()
+            self._save_prefs()
+            dlg.accept()
+        btn_save.clicked.connect(_save)
         dlg.exec()
 
     def _open_sp_engine_config(self, idx: int):
@@ -6013,12 +6094,14 @@ class MainWindow(QMainWindow):
         current = getattr(canvas, '_current_view_mode', 'tf_phase')
         # Map every mode to its IR-toggled counterpart
         _toggle_map = {
-            'tf_phase':       'tf_phase_ir',
-            'tf_phase_ir':    'tf_phase',
-            'magnitude_only': 'magnitude_ir',
-            'magnitude_ir':   'magnitude_only',
-            'phase_only':     'phase_ir',
-            'phase_ir':       'phase_only',
+            'tf_phase':               'tf_phase_ir',
+            'tf_phase_ir':            'tf_phase',
+            'magnitude_only':         'magnitude_ir',
+            'magnitude_ir':           'magnitude_only',
+            'phase_only':             'phase_ir',
+            'phase_ir':               'phase_only',
+            'magnitude_magnitude':    'magnitude_magnitude_ir',
+            'magnitude_magnitude_ir': 'magnitude_magnitude',
         }
         target = _toggle_map.get(current)
         if target:
@@ -6099,7 +6182,8 @@ class MainWindow(QMainWindow):
                 ir = getattr(self.canvas_meas, '_ir_visible', False)
                 if p1 == 'magnitude' and p2 == 'magnitude':
                     # Both slots want magnitude → dual-magnitude internal mode
-                    self.canvas_meas.set_view_mode('magnitude_magnitude')
+                    self.canvas_meas.set_view_mode(
+                        'magnitude_magnitude_ir' if ir else 'magnitude_magnitude')
                 elif p1 == 'magnitude' and p2 == 'phase':
                     self.canvas_meas.set_view_mode('tf_phase_ir' if ir else 'tf_phase')
                 elif p1 == 'phase' and p2 == 'magnitude':
@@ -7007,6 +7091,7 @@ class MainWindow(QMainWindow):
             if not self.engine.running:
                 try:
                     self.engine.start()
+                    self._post_start_check()
                 except Exception as exc:
                     # Si el stream no pudo arrancar, revertir el botón
                     if idx < len(self._tf_engines):
@@ -7716,6 +7801,8 @@ class MainWindow(QMainWindow):
             _Qt2.Key.Key_E:     self._toggle_spl_meters,
             _Qt2.Key.Key_K:     self._toggle_spl_clock,
             _Qt2.Key.Key_R:     self._on_delay_reset,
+            _Qt2.Key.Key_V:     self._clear_averaging_buffers,   # SMAART: Clear Averaging Buffer
+            _Qt2.Key.Key_B:     self._toggle_data_bar,           # SMAART: Toggle Data Bar
         }
 
         class _AppKeyFilter(QObject):
@@ -7909,6 +7996,26 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'canvas_meas') and hasattr(self.canvas_meas, '_smooth_btn'):
             self.canvas_meas._current_smooth = frac
 
+    def _post_start_check(self):
+        """
+        Called after engine.start() succeeds.
+        If the engine fell back to a different device, update the UI.
+        """
+        fb = getattr(self.engine, '_fallback_device_name', None)
+        if fb:
+            self.sb.showMessage(
+                f'⚠  Interface not found — using "{fb}" (built-in). '
+                'Change device in Options → I-O Config.', 10000)
+            # Sync combobox to actual device
+            for i, did in enumerate(self._dev_in_ids):
+                if did == self.engine.dev_in:
+                    self.cmb_dev_in.blockSignals(True)
+                    self.cmb_dev_in.setCurrentIndex(i)
+                    self.cmb_dev_in.blockSignals(False)
+                    break
+            # Clear the flag so we don't re-warn
+            del self.engine._fallback_device_name
+
     def _safe_restart(self):
         """
         Reinicia el stream con manejo de error visible.
@@ -8081,6 +8188,29 @@ class MainWindow(QMainWindow):
                 pass
         self.sb.showMessage(f'Data Window: {window_name}', 3000)
 
+    def _clear_averaging_buffers(self):
+        """V — Clear Averaging Buffer (igual que SMAART).
+        Resetea los RunningTF de todos los engines TF y Spectrum."""
+        # TF engines
+        if hasattr(self, '_running_tfs'):
+            for rtf in self._running_tfs:
+                try: rtf.reset()
+                except Exception: pass
+        # Spectrum engines
+        for eng in getattr(self, '_sp_engines', []):
+            try: eng['rtf'].reset()
+            except Exception: pass
+        # Limpiar canvas TF
+        if hasattr(self, 'canvas_meas'):
+            self.canvas_meas.clear()
+        self.sb.showMessage('Averaging buffer cleared', 2000)
+
+    def _toggle_data_bar(self):
+        """B — Toggle Data Bar (igual que SMAART).
+        Muestra/oculta el panel lateral de engines y settings."""
+        if hasattr(self, '_settings_widget'):
+            self._settings_widget.setVisible(not self._settings_widget.isVisible())
+
     def _on_delay_reset(self):
         """Reset global (tecla R) → resetea todos los engines y vuelve a modo raw."""
         self._delay_comp_ms = 0.0
@@ -8138,6 +8268,11 @@ class MainWindow(QMainWindow):
                 continue
 
             self.canvas_spec.update_sp_engine(eng['canvas_idx'], rtf.freqs, rtf.Gxx)
+            # Meter de nivel en la fila del engine
+            _rows = getattr(self, '_sp_eng_rows', [])
+            if i < len(_rows):
+                _rms_db = 20.0 * np.log10(float(np.sqrt(np.mean(sig ** 2))) + 1e-9)
+                _rows[i].update_level(_rms_db)
             # ── Panel secundario — Spectrum ───────────────────────────
             if (self._secondary_panel is not None and
                     self._secondary_panel._current_view == 'RTA'):

@@ -588,44 +588,109 @@ class AudioEngine:
             except Exception:
                 pass
 
-        # ── Abrir stream ──────────────────────────────────────────────
-        if max_out < 1:
-            # Genuinamente sin salida — solo-captura (generador inactivo)
-            self.has_output = False
-            fs_use = self._negotiate_fs(n_in, n_out=0)
-            self.fs = fs_use
-            self._stream = sd.InputStream(
-                samplerate = fs_use,
-                blocksize  = self.blocksize,
-                device     = self.dev_in,
-                channels   = n_in,
-                dtype      = 'float32',
-                callback   = self._callback_input_only,
-                latency    = _LATENCY,
-            )
-            print('[AudioEngine] ⚠  Input-only mode — signal generator disabled '
-                  f'(dev_out={self.dev_out} has 0 output channels).')
-        else:
-            self.has_output = True
-            n_out  = min(2, max_out)
-            fs_use = self._negotiate_fs(n_in, n_out)
-            self.fs = fs_use
-            # Cuando IN y OUT son el mismo dispositivo (ej. Scarlett 18i8 USB),
-            # CoreAudio exige abrir un único stream dúplex — no dos streams separados.
-            # Pasar un entero en vez de una tupla lo indica a sounddevice/PortAudio.
-            _device_arg = self.dev_in if self.dev_in == self.dev_out \
-                          else (self.dev_in, self.dev_out)
-            self._stream = sd.Stream(
-                samplerate = fs_use,
-                blocksize  = self.blocksize,
-                device     = _device_arg,
-                channels   = (n_in, n_out),
-                dtype      = 'float32',
-                callback   = self._callback,
-                latency    = _LATENCY,
-            )
+        # ── Abrir stream (con fallback automático al default del sistema) ──
+        def _open_stream(dev_in, dev_out, n_in, max_out):
+            """Intenta abrir stream; lanza excepción si falla."""
+            if max_out < 1:
+                self.has_output = False
+                fs_use = self._negotiate_fs(n_in, n_out=0)
+                self.fs = fs_use
+                stream = sd.InputStream(
+                    samplerate = fs_use,
+                    blocksize  = self.blocksize,
+                    device     = dev_in,
+                    channels   = n_in,
+                    dtype      = 'float32',
+                    callback   = self._callback_input_only,
+                    latency    = _LATENCY,
+                )
+                print('[AudioEngine] ⚠  Input-only mode — signal generator disabled '
+                      f'(dev_out={dev_out} has 0 output channels).')
+            else:
+                self.has_output = True
+                n_out  = min(2, max_out)
+                fs_use = self._negotiate_fs(n_in, n_out)
+                self.fs = fs_use
+                _device_arg = dev_in if dev_in == dev_out else (dev_in, dev_out)
+                stream = sd.Stream(
+                    samplerate = fs_use,
+                    blocksize  = self.blocksize,
+                    device     = _device_arg,
+                    channels   = (n_in, n_out),
+                    dtype      = 'float32',
+                    callback   = self._callback,
+                    latency    = _LATENCY,
+                )
+            stream.start()
+            return stream
 
-        self._stream.start()
+        try:
+            with _suppress_pa_stderr():
+                self._stream = _open_stream(self.dev_in, self.dev_out, n_in, max_out)
+        except Exception as e:
+            # Stream failed — the configured device may be disconnected, shuffled,
+            # or a virtual device (e.g. iPhone Mirroring) that PortAudio can't open.
+            # → Scan ALL physical devices and use the first one that actually opens.
+            print(f'[AudioEngine] Stream open failed ({e}). '
+                  f'Scanning all devices for a working input...')
+            _all_devs   = sd.query_devices()
+            _tried      = {self.dev_in}
+            _opened     = False
+
+            # Find a working output first (prefer current, then system default, then any)
+            _out_id = self.dev_out
+            _out_info = _all_devs[_out_id] if 0 <= _out_id < len(_all_devs) else None
+            if _out_info is None or int(_out_info.get('max_output_channels', 0)) < 1:
+                try:
+                    _sys_out = int(sd.default.device[1])
+                    if int(_all_devs[_sys_out]['max_output_channels']) > 0:
+                        _out_id = _sys_out
+                except Exception:
+                    pass
+
+            for _try_id, _d in enumerate(_all_devs):
+                if _try_id in _tried:
+                    continue
+                if int(_d.get('max_input_channels', 0)) < 1:
+                    continue
+                _tried.add(_try_id)
+                _fs_try = int(_d.get('default_samplerate', 48000))
+                _out_ch = int(_all_devs[_out_id].get('max_output_channels', 0)) \
+                          if 0 <= _out_id < len(_all_devs) else 0
+                print(f'[AudioEngine] Trying device {_try_id}: "{_d["name"]}"')
+                try:
+                    with _suppress_pa_stderr():
+                        # Open as input-only — safest fallback (no duplex complexity)
+                        _s = sd.InputStream(
+                            samplerate = _fs_try,
+                            blocksize  = self.blocksize,
+                            device     = _try_id,
+                            channels   = 1,
+                            dtype      = 'float32',
+                            callback   = self._callback_input_only,
+                            latency    = _LATENCY,
+                        )
+                        _s.start()
+                    # Success — commit this device
+                    self._stream       = _s
+                    self.dev_in        = _try_id
+                    self.has_output    = False   # input-only fallback
+                    self.fs            = _fs_try
+                    self._fallback_device_name = _d['name']
+                    _opened = True
+                    print(f'[AudioEngine] ✓ Fallback stream opened on '
+                          f'"{_d["name"]}" (id {_try_id}, fs={_fs_try})')
+                    break
+                except Exception as _e2:
+                    print(f'[AudioEngine]   → failed: {_e2}')
+                    continue
+
+            if not _opened:
+                raise RuntimeError(
+                    'No working audio input device found. '
+                    'Connect an audio interface or enable the built-in microphone '
+                    'in System Settings → Privacy → Microphone.')
+
         self._running = True
 
     def stop(self):

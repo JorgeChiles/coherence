@@ -1,15 +1,15 @@
 {
-  "dev_in": 2,
-  "dev_out": 2,
-  "ch_ref": 4,
+  "dev_in": 0,
+  "dev_out": 1,
+  "ch_ref": 1,
   "ch_spl": 1,
   "current_ws": 0,
   "workspaces": [
     {
       "name": "Workspace 1",
-      "dev_in": 2,
-      "dev_out": 2,
-      "ch_ref": 4,
+      "dev_in": 0,
+      "dev_out": 1,
+      "ch_ref": 1,
       "ch_spl": 1,
       "n_averages": 8,
       "nperseg": 4096,
@@ -20,16 +20,6 @@
           "ch": 1,
           "color": "#BF5AF2",
           "name": "UNO"
-        },
-        {
-          "ch": 3,
-          "color": "#0A84FF",
-          "name": "DOS"
-        },
-        {
-          "ch": 4,
-          "color": "#00E5FF",
-          "name": "REF"
         }
       ]
     }
