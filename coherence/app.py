@@ -1146,9 +1146,9 @@ class MeasurementCanvas(FigureCanvas):
         self.ax_ir.tick_params(axis='x', which='both',
                                top=False, labeltop=False,
                                bottom=True, labelbottom=True,
-                               labelsize=7, colors=TEXT_MID)
+                               labelsize=6, colors=TEXT_MID)
         self.ax_ir.xaxis.set_label_position('bottom')
-        self.ax_ir.set_xlabel('ms', fontsize=7, color=TEXT_MID, labelpad=2)
+        self.ax_ir.set_xlabel('ms', fontsize=6, color=TEXT_MID, labelpad=1)
 
         self.line_ir, = self.ax_ir.plot([], [], color=self._eng_colors[0], lw=0.9, alpha=0.90)
         self.line_ir_peak = self.ax_ir.axvline(0, color=ORANGE, lw=1.2, ls='--', alpha=0.8)
@@ -1171,7 +1171,7 @@ class MeasurementCanvas(FigureCanvas):
         # Panel central: grilla de frecuencias CON labels (siempre visibles)
         setup_smaart_axis(self.ax_tf, bg=BG_PLOT,
                           show_xlabels=True, show_xlabel=False)
-        self.ax_tf.set_ylabel('dB', fontsize=7, color=TEXT_MID, labelpad=1)
+        self.ax_tf.set_ylabel('dB', fontsize=6, color=TEXT_MID, labelpad=0)
         # Grilla horizontal cada 6 dB — estilo SMAART
         for _db in range(-24, 25, 6):
             _lw, _ls = (0.8, '--') if _db == 0 else (0.4, '-')
@@ -1182,7 +1182,7 @@ class MeasurementCanvas(FigureCanvas):
         self._tf_ymin, self._tf_ymax = -18, 18
         self._coh_ymax = 1.05
         self.ax_coh.set_ylim(*self._coh_aligned_lim())
-        self.ax_coh.set_ylabel('γ²', fontsize=7, color=COH_COLOR, labelpad=4)
+        self.ax_coh.set_ylabel('γ²', fontsize=6, color=COH_COLOR, labelpad=2)
         self.ax_coh.tick_params(axis='y', colors=COH_COLOR, labelsize=6)
         self.ax_coh.set_yticks([0.0, 0.5, 1.0])
         # Disable offset/scientific notation on coherence axis — prevents "×" artifacts
@@ -1216,14 +1216,14 @@ class MeasurementCanvas(FigureCanvas):
         # Panel inferior: muestra los labels de frecuencia en Hz/kHz
         setup_smaart_axis(self.ax_ph, bg=BG_PLOT,
                           show_xlabels=True, show_xlabel=True)
-        self.ax_ph.set_ylabel('°', fontsize=7, color=TEXT_MID, labelpad=1)
+        self.ax_ph.set_ylabel('°', fontsize=6, color=TEXT_MID, labelpad=0)
         self.ax_ph.axhline(  0,   color='#253225', lw=0.9, ls='--')
         self.ax_ph.axhline( 90,   color='#1d261d', lw=0.5, ls=':')
         self.ax_ph.axhline(-90,   color='#1d261d', lw=0.5, ls=':')
         self.ax_ph.axhline( 180,  color='#1a221a', lw=0.4, ls=':')
         self.ax_ph.axhline(-180,  color='#1a221a', lw=0.4, ls=':')
         self.ax_ph.set_yticks([-180, -90, 0, 90, 180])
-        self.ax_ph.tick_params(axis='y', labelsize=7, colors=TEXT_MID)
+        self.ax_ph.tick_params(axis='y', labelsize=6, colors=TEXT_MID)
 
         _p0, = self.ax_ph.semilogx(f0, [0, 0], color=self._eng_colors[0], lw=2.2, alpha=1.0)
         _p1, = self.ax_ph.semilogx([], [],     color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-')
@@ -1262,8 +1262,8 @@ class MeasurementCanvas(FigureCanvas):
         if not hasattr(self, 'ax_ir'):
             return
 
-        L, W  = 0.06, 0.875    # left margin, width  (right edge = L+W = 0.935)
-        B, T  = 0.04, 0.99     # bottom, top of usable area
+        L, W  = 0.045, 0.90    # left margin, width  (right edge = L+W = 0.945)
+        B, T  = 0.025, 0.995  # bottom, top of usable area
         GAP   = 0.025           # gap between stacked panels
         avail = T - B           # 0.92 total usable height
 
@@ -1305,19 +1305,19 @@ class MeasurementCanvas(FigureCanvas):
             cur_b += h + GAP
 
         # ── X-axis tick labels — every visible frequency panel shows them ──
-        self.ax_tf.tick_params(axis='x', which='major', labelsize=7,
+        self.ax_tf.tick_params(axis='x', which='major', labelsize=6,
                                colors='#9e9e9e', labelbottom=show_tf)
-        self.ax_ph.tick_params(axis='x', which='major', labelsize=7,
+        self.ax_ph.tick_params(axis='x', which='major', labelsize=6,
                                colors='#9e9e9e', labelbottom=show_ph)
 
         # ── Frequency (Hz) xlabel on bottommost visible frequency panel ──
         if show_ph:
-            self.ax_ph.set_xlabel('Frequency (Hz)', fontsize=7,
-                                  color='#6a7a6a', labelpad=3)
+            self.ax_ph.set_xlabel('Frequency (Hz)', fontsize=6,
+                                  color='#6a7a6a', labelpad=2)
             self.ax_tf.set_xlabel('')
         elif show_tf:
-            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=7,
-                                  color='#6a7a6a', labelpad=3)
+            self.ax_tf.set_xlabel('Frequency (Hz)', fontsize=6,
+                                  color='#6a7a6a', labelpad=2)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1342,9 +1342,9 @@ class MeasurementCanvas(FigureCanvas):
                                                                    'magnitude_magnitude_ir'):
             self._view_mag_mag = False
             self.ax_ph.set_ylim(-185, 185)
-            self.ax_ph.set_ylabel('°', fontsize=7, color='#6a7a6a', labelpad=1)
+            self.ax_ph.set_ylabel('°', fontsize=6, color='#6a7a6a', labelpad=0)
             self.ax_ph.set_yticks([-180, -90, 0, 90, 180])
-            self.ax_ph.tick_params(axis='y', labelsize=7, colors='#6a7a6a')
+            self.ax_ph.tick_params(axis='y', labelsize=6, colors='#6a7a6a')
 
         self._current_view_mode = mode
 
@@ -1357,9 +1357,9 @@ class MeasurementCanvas(FigureCanvas):
                        if _ymin <= v <= _ymax]
             self.ax_ph.set_yticks(_yticks)
             self.ax_ph.set_ylim(_ymin, _ymax)
-            self.ax_ph.set_ylabel('dB', fontsize=7, color='#6a7a6a', labelpad=1)
+            self.ax_ph.set_ylabel('dB', fontsize=6, color='#6a7a6a', labelpad=0)
             self.ax_ph.set_yscale('linear')
-            self.ax_ph.tick_params(axis='y', labelsize=7, colors='#6a7a6a')
+            self.ax_ph.tick_params(axis='y', labelsize=6, colors='#6a7a6a')
 
         # ── Phase trace lines visibility ──
         show_ph_lines = mode in ('tf_phase', 'tf_phase_ir', 'phase_only',
@@ -1809,7 +1809,7 @@ class MeasurementCanvas(FigureCanvas):
         self.draw_idle()
 
     def _style_ax(self, ax, log=True):
-        ax.tick_params(axis='both', labelsize=7, colors=TEXT_MID)
+        ax.tick_params(axis='both', labelsize=6, colors=TEXT_MID)
         ax.grid(True, which='major', lw=0.4, color='#1e261e')
         ax.grid(True, which='minor', lw=0.25, color='#171d17', ls=':')
         for sp in ax.spines.values():
@@ -2334,13 +2334,13 @@ class SpectrumCanvas(FigureCanvas):
 
     def _build(self):
         self.ax = self.fig.add_subplot(111, facecolor=BG_PLOT)
-        self.fig.subplots_adjust(left=0.07, right=0.935, top=0.98, bottom=0.07)
+        self.fig.subplots_adjust(left=0.055, right=0.985, top=0.995, bottom=0.04)
 
         setup_smaart_axis(self.ax, bg=BG_PLOT,
                           show_xlabels=True, show_xlabel=True)
         self.ax.set_ylim(-80, 6)
         self.ax.set_autoscale_on(False)        # eje Y fijo siempre
-        self.ax.set_ylabel('dBFS', fontsize=7, color=TEXT_MID, labelpad=1)
+        self.ax.set_ylabel('dBFS', fontsize=6, color=TEXT_MID, labelpad=0)
         # Grilla horizontal cada 6 dB — estilo SMAART
         _grid_dbs = [-60, -54, -48, -42, -36, -30, -24, -18, -12, -6, 0]
         for _db in _grid_dbs:
@@ -2349,7 +2349,7 @@ class SpectrumCanvas(FigureCanvas):
             self.ax.axhline(_db, color=_col, lw=_lw, ls='-', zorder=0)
         # Yticks alineados con las líneas de grid (cada 6 dB)
         self.ax.set_yticks(_grid_dbs)
-        self.ax.tick_params(axis='y', labelsize=7, colors=TEXT_MID)
+        self.ax.tick_params(axis='y', labelsize=6, colors=TEXT_MID)
         for sp in self.ax.spines.values():
             sp.set_color(BORDER)
 
@@ -2732,15 +2732,15 @@ class SpectrogramCanvas(FigureCanvas):
 
     def _build(self):
         self.ax = self.fig.add_subplot(111, facecolor=BG_PLOT)
-        self.fig.subplots_adjust(left=0.07, right=0.935, top=0.98, bottom=0.07)
-        self.ax.set_xlabel('Frequency (Hz)', fontsize=7, color=TEXT_MID)
+        self.fig.subplots_adjust(left=0.01, right=0.995, top=0.995, bottom=0.04)
+        self.ax.set_xlabel('Frequency (Hz)', fontsize=6, color=TEXT_MID)
         self.ax.set_xscale('log')
         self.ax.set_xlim(20, 20000)
         self._apply_xticks()
         self._apply_xgrid()
         for sp in self.ax.spines.values():
             sp.set_color(BORDER)
-        self.ax.tick_params(colors=TEXT_MID, labelsize=7)
+        self.ax.tick_params(colors=TEXT_MID, labelsize=6)
         self.ax.set_yticks([])
         self.fig.patch.set_facecolor(BG_PANEL)
         self.draw()
@@ -2823,7 +2823,7 @@ class SpectrogramCanvas(FigureCanvas):
         """Construye pcolormesh desde cero (primer frame o cambio de resolución)."""
         self.ax.cla()
         self.ax.set_facecolor('#000000')   # fondo negro puro para mejor contraste
-        self.ax.set_xlabel('Frequency (Hz)', fontsize=7, color=TEXT_MID)
+        self.ax.set_xlabel('Frequency (Hz)', fontsize=6, color=TEXT_MID)
 
         t = np.arange(self.N_TIME)  # Y: 0=más antiguo (arriba), N-1=más nuevo (abajo)
         self._mesh = self.ax.pcolormesh(
@@ -2843,7 +2843,7 @@ class SpectrogramCanvas(FigureCanvas):
         self._apply_xgrid()
         for sp in self.ax.spines.values():
             sp.set_color(BORDER)
-        self.ax.tick_params(colors=TEXT_MID, labelsize=7)
+        self.ax.tick_params(colors=TEXT_MID, labelsize=6)
 
         # Colorbar lateral con escala dBFS — usa cax fijo para no mover el eje X
         if self._cbar is not None:
@@ -2859,23 +2859,23 @@ class SpectrogramCanvas(FigureCanvas):
                 pass
             self._cbar_ax = None
         # Fixed-position colorbar axes: [left, bottom, width, height] in fig coords.
-        # Main ax ends at right=0.935; colorbar sits at 0.940–0.952 (within figure).
-        # Height matches subplots_adjust: top=0.98 − bottom=0.07 = 0.91
-        self._cbar_ax = self.fig.add_axes([0.940, 0.07, 0.012, 0.91])
+        # Main ax ends at right=0.948; colorbar sits at 0.953–0.965 (within figure).
+        # Height matches subplots_adjust: top=0.995 − bottom=0.04 = 0.955
+        self._cbar_ax = self.fig.add_axes([0.953, 0.04, 0.012, 0.955])
         self._cbar = self.fig.colorbar(
             self._mesh, cax=self._cbar_ax,
             ticks=[self._vmin,
                    (self._vmin + self._vmax) / 2,
                    self._vmax],
         )
-        self._cbar.ax.tick_params(colors=TEXT_MID, labelsize=7)
-        self._cbar.set_label('dBFS', color=TEXT_MID, fontsize=7)
+        self._cbar.ax.tick_params(colors=TEXT_MID, labelsize=6)
+        self._cbar.set_label('dBFS', color=TEXT_MID, fontsize=6)
         # Etiquetas de colorbar con valores dBFS
         self._cbar.ax.yaxis.set_tick_params(color=TEXT_MID)
         for t_lbl in self._cbar.ax.get_yticklabels():
             t_lbl.set_color(TEXT_MID)
 
-        self.fig.subplots_adjust(left=0.07, right=0.935, top=0.98, bottom=0.07)
+        self.fig.subplots_adjust(left=0.01, right=0.948, top=0.995, bottom=0.04)
 
         self.draw()
         self._bg = self.copy_from_bbox(self.ax.bbox)
