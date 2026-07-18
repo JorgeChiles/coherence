@@ -4004,7 +4004,7 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QStackedWidget
 
         outer = QWidget()
-        outer.setFixedWidth(140)
+        outer.setFixedWidth(160)
         outer.setStyleSheet(
             f'background:{BG_SETTINGS};border-left:1px solid {BORDER};')
         ov = QVBoxLayout(outer)
