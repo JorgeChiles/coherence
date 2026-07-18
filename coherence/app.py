@@ -1262,8 +1262,8 @@ class MeasurementCanvas(FigureCanvas):
         if not hasattr(self, 'ax_ir'):
             return
 
-        L, W  = 0.07, 0.865    # left margin, width  (right edge = L+W = 0.935)
-        B, T  = 0.06, 0.98     # bottom, top of usable area
+        L, W  = 0.06, 0.875    # left margin, width  (right edge = L+W = 0.935)
+        B, T  = 0.04, 0.99     # bottom, top of usable area
         GAP   = 0.025           # gap between stacked panels
         avail = T - B           # 0.92 total usable height
 
@@ -2342,10 +2342,13 @@ class SpectrumCanvas(FigureCanvas):
         self.ax.set_autoscale_on(False)        # eje Y fijo siempre
         self.ax.set_ylabel('dBFS', fontsize=7, color=TEXT_MID, labelpad=1)
         # Grilla horizontal cada 6 dB — estilo SMAART
-        for _db in [-60, -54, -48, -42, -36, -30, -24, -18, -12, -6, 0]:
+        _grid_dbs = [-60, -54, -48, -42, -36, -30, -24, -18, -12, -6, 0]
+        for _db in _grid_dbs:
             _col = '#232e23' if _db == 0 else '#181e18'
             _lw  = 0.6 if _db == 0 else 0.4
             self.ax.axhline(_db, color=_col, lw=_lw, ls='-', zorder=0)
+        # Yticks alineados con las líneas de grid (cada 6 dB)
+        self.ax.set_yticks(_grid_dbs)
         self.ax.tick_params(axis='y', labelsize=7, colors=TEXT_MID)
         for sp in self.ax.spines.values():
             sp.set_color(BORDER)
@@ -2387,15 +2390,13 @@ class SpectrumCanvas(FigureCanvas):
         self._res_btn.clicked.connect(self._show_res_menu)
         self._res_btn.raise_()
 
-        # Botón engrane — fuera del área de ejes, esquina inferior derecha
+        # Botón engrane — oculto (el gear está en el header de CanvasOverlay)
         self._cfg_btn = QPushButton('⚙', self)
         self._cfg_btn.setFixedSize(24, 24)
         self._cfg_btn.setStyleSheet(_btn_ss)
-        self._cfg_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._cfg_btn.setToolTip('Settings (O)')
         self._cfg_btn.clicked.connect(
             lambda: self.on_config_clicked() if self.on_config_clicked else None)
-        self._cfg_btn.raise_()
+        self._cfg_btn.hide()   # no duplicar el gear del header
         self.on_config_clicked = None   # MainWindow lo enlaza
 
         self._position_overlay()
