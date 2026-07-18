@@ -1262,8 +1262,8 @@ class MeasurementCanvas(FigureCanvas):
         if not hasattr(self, 'ax_ir'):
             return
 
-        L, W  = 0.045, 0.90    # left margin, width  (right edge = L+W = 0.945)
-        B, T  = 0.025, 0.995  # bottom, top of usable area
+        L, W  = 0.045, 0.90    # left=4.5%, right edge=94.5%  ← canonical for ALL canvases
+        B, T  = 0.025, 0.995  # bottom=2.5%, top=99.5%
         GAP   = 0.025           # gap between stacked panels
         avail = T - B           # 0.92 total usable height
 
@@ -2334,7 +2334,7 @@ class SpectrumCanvas(FigureCanvas):
 
     def _build(self):
         self.ax = self.fig.add_subplot(111, facecolor=BG_PLOT)
-        self.fig.subplots_adjust(left=0.055, right=0.985, top=0.995, bottom=0.04)
+        self.fig.subplots_adjust(left=0.045, right=0.945, top=0.995, bottom=0.025)
 
         setup_smaart_axis(self.ax, bg=BG_PLOT,
                           show_xlabels=True, show_xlabel=True)
@@ -2732,7 +2732,7 @@ class SpectrogramCanvas(FigureCanvas):
 
     def _build(self):
         self.ax = self.fig.add_subplot(111, facecolor=BG_PLOT)
-        self.fig.subplots_adjust(left=0.01, right=0.995, top=0.995, bottom=0.04)
+        self.fig.subplots_adjust(left=0.045, right=0.945, top=0.995, bottom=0.025)
         self.ax.set_xlabel('Frequency (Hz)', fontsize=6, color=TEXT_MID)
         self.ax.set_xscale('log')
         self.ax.set_xlim(20, 20000)
@@ -2859,9 +2859,9 @@ class SpectrogramCanvas(FigureCanvas):
                 pass
             self._cbar_ax = None
         # Fixed-position colorbar axes: [left, bottom, width, height] in fig coords.
-        # Main ax ends at right=0.948; colorbar sits at 0.953–0.965 (within figure).
-        # Height matches subplots_adjust: top=0.995 − bottom=0.04 = 0.955
-        self._cbar_ax = self.fig.add_axes([0.953, 0.04, 0.012, 0.955])
+        # Main ax ends at right=0.945 (canonical margin); colorbar at 0.950–0.962.
+        # Height = top(0.995) − bottom(0.025) = 0.970
+        self._cbar_ax = self.fig.add_axes([0.950, 0.025, 0.012, 0.970])
         self._cbar = self.fig.colorbar(
             self._mesh, cax=self._cbar_ax,
             ticks=[self._vmin,
@@ -2875,7 +2875,7 @@ class SpectrogramCanvas(FigureCanvas):
         for t_lbl in self._cbar.ax.get_yticklabels():
             t_lbl.set_color(TEXT_MID)
 
-        self.fig.subplots_adjust(left=0.01, right=0.948, top=0.995, bottom=0.04)
+        self.fig.subplots_adjust(left=0.045, right=0.945, top=0.995, bottom=0.025)
 
         self.draw()
         self._bg = self.copy_from_bbox(self.ax.bbox)
