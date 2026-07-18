@@ -1272,12 +1272,12 @@ class MeasurementCanvas(FigureCanvas):
         _LAYOUTS = {
             'magnitude_only':         [('tf', 1.00)],
             'phase_only':             [('ph', 1.00)],
-            'tf_phase':               [('ph', 0.46), ('tf', 0.54)],
-            'magnitude_ir':           [('tf', 0.72), ('ir', 0.28)],
-            'phase_ir':               [('ph', 0.72), ('ir', 0.28)],
-            'tf_phase_ir':            [('ph', 0.36), ('tf', 0.44), ('ir', 0.20)],
-            'magnitude_magnitude':    [('ph', 0.46), ('tf', 0.54)],
-            'magnitude_magnitude_ir': [('ph', 0.30), ('tf', 0.50), ('ir', 0.20)],
+            'tf_phase':               [('ph', 0.50), ('tf', 0.50)],
+            'magnitude_ir':           [('tf', 0.74), ('ir', 0.26)],
+            'phase_ir':               [('ph', 0.74), ('ir', 0.26)],
+            'tf_phase_ir':            [('ph', 0.425), ('tf', 0.425), ('ir', 0.15)],
+            'magnitude_magnitude':    [('ph', 0.50), ('tf', 0.50)],
+            'magnitude_magnitude_ir': [('ph', 0.425), ('tf', 0.425), ('ir', 0.15)],
         }
         mode   = getattr(self, '_current_view_mode', 'tf_phase_ir')
         panels = _LAYOUTS.get(mode, _LAYOUTS['tf_phase_ir'])
@@ -4004,7 +4004,7 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QStackedWidget
 
         outer = QWidget()
-        outer.setFixedWidth(240)
+        outer.setFixedWidth(140)
         outer.setStyleSheet(
             f'background:{BG_SETTINGS};border-left:1px solid {BORDER};')
         ov = QVBoxLayout(outer)
@@ -6081,16 +6081,10 @@ class MainWindow(QMainWindow):
         if total <= 0:
             return
 
-        mode = getattr(self.canvas_meas, '_current_view_mode', 'magnitude_only')
-        _THREE = ('tf_phase_ir', 'magnitude_magnitude_ir')
-        _TWO   = ('tf_phase', 'magnitude_ir', 'phase_ir', 'magnitude_magnitude')
-        if mode in _THREE:
-            ratio = 0.72
-        elif mode in _TWO:
-            ratio = 0.62
-        else:
-            ratio = 0.55
-
+        ir_on = getattr(self, '_ir_visible', False)
+        # IR on → canvas_meas needs 57.5% (IR 15% + TF/Phase 42.5% of total)
+        # IR off → equal 50/50 split
+        ratio = 0.575 if ir_on else 0.50
         self._panel_splitter.setSizes([int(total * ratio), int(total * (1 - ratio))])
 
     def _toggle_ir_panel(self, *args):
