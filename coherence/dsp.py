@@ -345,10 +345,10 @@ def setup_smaart_axis(ax, fmin=20, fmax=20000, bg='#0d0d0d',
     ax.set_xticks(minor, minor=True)
     ax.xaxis.set_minor_formatter(_mticker.NullFormatter())
 
-    ax.tick_params(axis='y', labelsize=6, colors='#8a9e8a')
+    ax.tick_params(axis='y', labelsize=6, colors='#8a9e8a', length=0)
     ax.tick_params(axis='x', which='major', labelsize=6, colors='#9e9e9e',
-                   labelbottom=show_xlabels)
-    ax.tick_params(axis='x', which='minor', colors='#4a5a4a', labelbottom=False)
+                   labelbottom=show_xlabels, length=3)
+    ax.tick_params(axis='x', which='minor', colors='#4a5a4a', labelbottom=False, length=2)
 
     if show_xlabel:
         ax.set_xlabel('Frequency (Hz)', fontsize=6, color='#6a7a6a', labelpad=2)

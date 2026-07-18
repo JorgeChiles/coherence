@@ -1137,7 +1137,8 @@ class MeasurementCanvas(FigureCanvas):
         self.ax_ir.set_ylim(-1.1, 1.1)
         self.ax_ir.axhline(0, color=BORDER, lw=0.6)
         self.ax_ir.axvline(0, color='#2a2a2a', lw=0.7, ls='--')   # referencia fija 0 ms
-        self.ax_ir.set_ylabel('amp', fontsize=6, color=TEXT_DIM, labelpad=1)
+        self.ax_ir.set_ylabel('Level (%)', fontsize=6, color=TEXT_DIM, labelpad=1)
+        self.ax_ir.tick_params(axis='y', length=0)
         self._style_ax(self.ax_ir, log=False)
 
         # Eje X tiempo en ms — labels arriba (panel superior, hay espacio libre)
@@ -1171,7 +1172,8 @@ class MeasurementCanvas(FigureCanvas):
         # Panel central: grilla de frecuencias CON labels (siempre visibles)
         setup_smaart_axis(self.ax_tf, bg=BG_PLOT,
                           show_xlabels=True, show_xlabel=False)
-        self.ax_tf.set_ylabel('dB', fontsize=6, color=TEXT_MID, labelpad=0)
+        self.ax_tf.set_ylabel('Level (dB)', fontsize=6, color=TEXT_MID, labelpad=0)
+        self.ax_tf.tick_params(axis='y', length=0)
         # Grilla horizontal cada 6 dB — estilo SMAART
         for _db in range(-24, 25, 6):
             _lw, _ls = (0.8, '--') if _db == 0 else (0.4, '-')
@@ -1182,9 +1184,11 @@ class MeasurementCanvas(FigureCanvas):
         self._tf_ymin, self._tf_ymax = -18, 18
         self._coh_ymax = 1.05
         self.ax_coh.set_ylim(*self._coh_aligned_lim())
-        self.ax_coh.set_ylabel('γ²', fontsize=6, color=COH_COLOR, labelpad=2)
-        self.ax_coh.tick_params(axis='y', colors=COH_COLOR, labelsize=6)
-        self.ax_coh.set_yticks([0.0, 0.5, 1.0])
+        self.ax_coh.set_ylabel('', fontsize=6, color=COH_COLOR, labelpad=2)
+        self.ax_coh.tick_params(axis='y', colors=COH_COLOR, labelsize=6, length=0)
+        self.ax_coh.set_yticks([0.2, 0.4, 0.6, 0.8])
+        self.ax_coh.yaxis.set_major_formatter(
+            _mticker.FuncFormatter(lambda x, _: str(int(round(x * 100)))))
         # Disable offset/scientific notation on coherence axis — prevents "×" artifacts
         import matplotlib.ticker as _mticker
         self.ax_coh.yaxis.set_major_formatter(_mticker.ScalarFormatter(useOffset=False))
@@ -1216,14 +1220,14 @@ class MeasurementCanvas(FigureCanvas):
         # Panel inferior: muestra los labels de frecuencia en Hz/kHz
         setup_smaart_axis(self.ax_ph, bg=BG_PLOT,
                           show_xlabels=True, show_xlabel=True)
-        self.ax_ph.set_ylabel('°', fontsize=6, color=TEXT_MID, labelpad=0)
+        self.ax_ph.set_ylabel('Phase (deg)', fontsize=6, color=TEXT_MID, labelpad=0)
         self.ax_ph.axhline(  0,   color='#253225', lw=0.9, ls='--')
         self.ax_ph.axhline( 90,   color='#1d261d', lw=0.5, ls=':')
         self.ax_ph.axhline(-90,   color='#1d261d', lw=0.5, ls=':')
         self.ax_ph.axhline( 180,  color='#1a221a', lw=0.4, ls=':')
         self.ax_ph.axhline(-180,  color='#1a221a', lw=0.4, ls=':')
         self.ax_ph.set_yticks([-180, -90, 0, 90, 180])
-        self.ax_ph.tick_params(axis='y', labelsize=6, colors=TEXT_MID)
+        self.ax_ph.tick_params(axis='y', labelsize=6, colors=TEXT_MID, length=0)
 
         _p0, = self.ax_ph.semilogx(f0, [0, 0], color=self._eng_colors[0], lw=2.2, alpha=1.0)
         _p1, = self.ax_ph.semilogx([], [],     color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-')
@@ -1342,9 +1346,9 @@ class MeasurementCanvas(FigureCanvas):
                                                                    'magnitude_magnitude_ir'):
             self._view_mag_mag = False
             self.ax_ph.set_ylim(-185, 185)
-            self.ax_ph.set_ylabel('°', fontsize=6, color='#6a7a6a', labelpad=0)
+            self.ax_ph.set_ylabel('Phase (deg)', fontsize=6, color='#6a7a6a', labelpad=0)
             self.ax_ph.set_yticks([-180, -90, 0, 90, 180])
-            self.ax_ph.tick_params(axis='y', labelsize=6, colors='#6a7a6a')
+            self.ax_ph.tick_params(axis='y', labelsize=6, colors='#6a7a6a', length=0)
 
         self._current_view_mode = mode
 
@@ -1357,9 +1361,9 @@ class MeasurementCanvas(FigureCanvas):
                        if _ymin <= v <= _ymax]
             self.ax_ph.set_yticks(_yticks)
             self.ax_ph.set_ylim(_ymin, _ymax)
-            self.ax_ph.set_ylabel('dB', fontsize=6, color='#6a7a6a', labelpad=0)
+            self.ax_ph.set_ylabel('Level (dB)', fontsize=6, color='#6a7a6a', labelpad=0)
             self.ax_ph.set_yscale('linear')
-            self.ax_ph.tick_params(axis='y', labelsize=6, colors='#6a7a6a')
+            self.ax_ph.tick_params(axis='y', labelsize=6, colors='#6a7a6a', length=0)
 
         # ── Phase trace lines visibility ──
         show_ph_lines = mode in ('tf_phase', 'tf_phase_ir', 'phase_only',
@@ -1809,7 +1813,7 @@ class MeasurementCanvas(FigureCanvas):
         self.draw_idle()
 
     def _style_ax(self, ax, log=True):
-        ax.tick_params(axis='both', labelsize=6, colors=TEXT_MID)
+        ax.tick_params(axis='both', labelsize=6, colors=TEXT_MID, length=0)
         ax.grid(True, which='major', lw=0.4, color='#1e261e')
         ax.grid(True, which='minor', lw=0.25, color='#171d17', ls=':')
         for sp in ax.spines.values():
@@ -2340,7 +2344,7 @@ class SpectrumCanvas(FigureCanvas):
                           show_xlabels=True, show_xlabel=True)
         self.ax.set_ylim(-80, 6)
         self.ax.set_autoscale_on(False)        # eje Y fijo siempre
-        self.ax.set_ylabel('dBFS', fontsize=6, color=TEXT_MID, labelpad=0)
+        self.ax.set_ylabel('Level (dB)', fontsize=6, color=TEXT_MID, labelpad=0)
         # Grilla horizontal cada 6 dB — estilo SMAART
         _grid_dbs = [-60, -54, -48, -42, -36, -30, -24, -18, -12, -6, 0]
         for _db in _grid_dbs:
@@ -2349,7 +2353,7 @@ class SpectrumCanvas(FigureCanvas):
             self.ax.axhline(_db, color=_col, lw=_lw, ls='-', zorder=0)
         # Yticks alineados con las líneas de grid (cada 6 dB)
         self.ax.set_yticks(_grid_dbs)
-        self.ax.tick_params(axis='y', labelsize=6, colors=TEXT_MID)
+        self.ax.tick_params(axis='y', labelsize=6, colors=TEXT_MID, length=0)
         for sp in self.ax.spines.values():
             sp.set_color(BORDER)
 
