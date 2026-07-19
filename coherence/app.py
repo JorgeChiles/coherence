@@ -2514,6 +2514,7 @@ class SpectrumCanvas(FigureCanvas):
         self._last_freqs = None
         self._build()
         self._build_overlay()
+        self._apply_x_ticks()
 
     def _build(self):
         self.ax = self.fig.add_subplot(111, facecolor=BG_PLOT)
@@ -2618,10 +2619,33 @@ class SpectrumCanvas(FigureCanvas):
         # ⚙ fuera del eje (debajo del eje X, extremo derecho)
         self._cfg_btn.move(w - 26, h - 26)
 
+    def _apply_x_ticks(self):
+        """Reapply ISO octave FixedLocator — call after build and on resize."""
+        import matplotlib.ticker as _mt
+        _major = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+        _minor = [25, 40, 50, 80, 100, 160, 200, 315, 400, 630,
+                  800, 1250, 1600, 2500, 3150, 5000, 6300, 10000, 12500, 20000]
+
+        def _fmt(x, _):
+            if x >= 1000:
+                v = x / 1000
+                return f'{int(v)}k' if v == int(v) else f'{v}k'
+            return f'{x:g}'
+
+        self.ax.xaxis.set_major_locator(_mt.FixedLocator(_major))
+        self.ax.xaxis.set_major_formatter(_mt.FuncFormatter(_fmt))
+        self.ax.xaxis.set_minor_locator(_mt.FixedLocator(_minor))
+        self.ax.xaxis.set_minor_formatter(_mt.NullFormatter())
+        self.ax.tick_params(axis='x', which='major', labelsize=6,
+                            colors='#9e9e9e', length=0, pad=2)
+        self.ax.tick_params(axis='x', which='minor', length=0)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, '_res_btn'):
             self._position_overlay()
+        if hasattr(self, 'ax'):
+            self._apply_x_ticks()
 
     def _show_res_menu(self):
         """Muestra el popup de resoluciones al hacer click."""
