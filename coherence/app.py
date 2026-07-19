@@ -3759,69 +3759,13 @@ class MainWindow(QMainWindow):
             'QSplitter::handle:hover{background:#3a5a3a;}')
         self._panel_splitter.addWidget(self._main_area)
 
-        # ── Workspace tab bar ─────────────────────────────────────────────
-        # ── Workspace tab bar — full-width at the very top of the window ──
-        _ws_row = QWidget()
-        self._ws_row = _ws_row
-        _ws_row.setFixedHeight(30)
-        _ws_row.setStyleSheet(
-            'background:#111111; border-bottom:1px solid #222222;')
-        _ws_lay = QHBoxLayout(_ws_row)
-        _ws_lay.setContentsMargins(6, 0, 6, 0)
-        _ws_lay.setSpacing(0)
-
-        self._ws_tab_bar = QTabBar()
-        self._ws_tab_bar.setExpanding(False)
-        self._ws_tab_bar.setTabsClosable(True)
-        self._ws_tab_bar.setMovable(True)
-        self._ws_tab_bar.setStyleSheet(
-            'QTabBar{'
-            '  background:#111111;'
-            '}'
-            'QTabBar::tab{'
-            '  background:#111111; color:#666666;'
-            '  border:none; border-right:1px solid #222222;'
-            '  padding:0px 18px 0px 14px; margin:0; min-width:90px;'
-            '  height:30px;'
-            '  font-size:12px; font-weight:normal;'
-            '}'
-            'QTabBar::tab:selected{'
-            '  background:#1c1c1c; color:#e2e2e2;'
-            '  border-bottom:2px solid #4aaa6a;'
-            '}'
-            'QTabBar::tab:hover:!selected{'
-            '  background:#171717; color:#aaaaaa;'
-            '}'
-            'QTabBar::close-button{'
-            '  subcontrol-position:right; subcontrol-origin:padding;'
-            '  width:10px; height:10px; margin-right:2px;'
-            '}'
-        )
-        self._ws_tab_bar.tabCloseRequested.connect(self._ws_close_tab)
-        self._ws_tab_bar.currentChanged.connect(self._ws_on_tab_changed)
-        self._ws_tab_bar.mouseDoubleClickEvent = self._ws_rename_tab_evt
-
-        _ws_add_btn = QPushButton('+')
-        _ws_add_btn.setFixedSize(26, 26)
-        _ws_add_btn.setToolTip('New session tab')
-        _ws_add_btn.setStyleSheet(
-            'QPushButton{background:transparent;color:#555555;border:none;'
-            'font-size:18px;font-weight:normal;padding:0;}'
-            'QPushButton:hover{color:#e2e2e2;background:#1c1c1c;border-radius:3px;}'
-        )
-        _ws_add_btn.clicked.connect(self._ws_add_new)
-
-        _ws_lay.addWidget(self._ws_tab_bar, stretch=1)
-        _ws_lay.addWidget(_ws_add_btn)
-
         cv.addWidget(self._panel_splitter, stretch=1)
         root.addWidget(center, stretch=1)
 
         # ── Derecha: panel settings ──
         root.addWidget(self._build_collapsible_settings())
 
-        # ── Assemble outer layout: tab bar at very top, then content ──
-        self._central_outer.addWidget(self._ws_row)
+        # ── Assemble outer layout ──
         self._central_outer.addWidget(_inner_container, stretch=1)
 
         # Compat tabs
@@ -3926,14 +3870,54 @@ class MainWindow(QMainWindow):
     def _build_info_bar(self):
         bar = QWidget()
         bar.setObjectName('info_bar')
-        bar.setFixedHeight(26)
+        bar.setFixedHeight(30)
         h = QHBoxLayout(bar)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(0)
 
-        self.lbl_app_title = QLabel('  COHERENCE  v0.2  ')
-        self.lbl_app_title.setObjectName('lbl_app_title')
-        h.addWidget(self.lbl_app_title)
+        # Workspace tab bar lives here (left side of info bar)
+        self._ws_tab_bar = QTabBar()
+        self._ws_tab_bar.setExpanding(False)
+        self._ws_tab_bar.setTabsClosable(True)
+        self._ws_tab_bar.setMovable(True)
+        self._ws_tab_bar.setStyleSheet(
+            'QTabBar{'
+            '  background:transparent;'
+            '}'
+            'QTabBar::tab{'
+            '  background:#111111; color:#666666;'
+            '  border:none; border-right:1px solid #222222;'
+            '  padding:0px 18px 0px 14px; margin:0; min-width:90px;'
+            '  height:30px;'
+            '  font-size:12px; font-weight:normal;'
+            '}'
+            'QTabBar::tab:selected{'
+            '  background:#1c1c1c; color:#e2e2e2;'
+            '  border-bottom:2px solid #4aaa6a;'
+            '}'
+            'QTabBar::tab:hover:!selected{'
+            '  background:#171717; color:#aaaaaa;'
+            '}'
+            'QTabBar::close-button{'
+            '  subcontrol-position:right; subcontrol-origin:padding;'
+            '  width:10px; height:10px; margin-right:2px;'
+            '}'
+        )
+        self._ws_tab_bar.tabCloseRequested.connect(self._ws_close_tab)
+        self._ws_tab_bar.currentChanged.connect(self._ws_on_tab_changed)
+        self._ws_tab_bar.mouseDoubleClickEvent = self._ws_rename_tab_evt
+        h.addWidget(self._ws_tab_bar)
+
+        _ws_add_btn = QPushButton('+')
+        _ws_add_btn.setFixedSize(26, 26)
+        _ws_add_btn.setToolTip('New session tab')
+        _ws_add_btn.setStyleSheet(
+            'QPushButton{background:transparent;color:#555555;border:none;'
+            'font-size:18px;font-weight:normal;padding:0;}'
+            'QPushButton:hover{color:#e2e2e2;background:#1c1c1c;border-radius:3px;}'
+        )
+        _ws_add_btn.clicked.connect(self._ws_add_new)
+        h.addWidget(_ws_add_btn)
 
         sep1 = QFrame(); sep1.setFrameShape(QFrame.Shape.VLine)
         sep1.setStyleSheet(f'color:{BORDER};')
@@ -4152,6 +4136,11 @@ class MainWindow(QMainWindow):
         self.btn_toggle_settings.setText('▶' if visible else '◀')
 
     def _update_cursor(self, info: str):
+        idx   = getattr(self, '_selected_engine_idx', 0)
+        color = ENGINE_PALETTE[idx % len(ENGINE_PALETTE)] if ENGINE_PALETTE else TEXT_HI
+        self.lbl_cursor_info.setStyleSheet(
+            f'color:{color};font-size:12px;font-family:Menlo,Monaco,monospace;'
+            f'background:transparent;padding:0 8px;')
         self.lbl_cursor_info.setText(f'  {info}')
 
     def _build_settings(self):
