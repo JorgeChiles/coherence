@@ -2522,11 +2522,11 @@ class SpectrumCanvas(FigureCanvas):
 
         setup_smaart_axis(self.ax, bg=BG_PLOT,
                           show_xlabels=True, show_xlabel=True)
-        self.ax.set_ylim(-80, 6)
+        self.ax.set_ylim(-30, 6)
         self.ax.set_autoscale_on(False)        # eje Y fijo siempre
         self.ax.set_ylabel('Level (dB)', fontsize=6, color=TEXT_MID, labelpad=0)
-        # Grilla horizontal cada 6 dB — estilo SMAART
-        _grid_dbs = [-60, -54, -48, -42, -36, -30, -24, -18, -12, -6, 0]
+        # Grilla horizontal cada 6 dB — estilo SMAART (36 dB range = igual que TF)
+        _grid_dbs = [-30, -24, -18, -12, -6, 0, 6]
         for _db in _grid_dbs:
             _col = '#232e23' if _db == 0 else '#181e18'
             _lw  = 0.6 if _db == 0 else 0.4
@@ -6359,13 +6359,9 @@ class MainWindow(QMainWindow):
         pass
 
     def _sync_splitter_for_ir(self):
-        """Adjust splitter proportions so every panel has the same dB/pixel ratio.
-
-        Slot1 = canvas_meas (TF / Magnitude / Phase / IR)
-        Slot2 = secondary canvas (Spectrum / RTA)
-
-        The physical height of each slot is set proportional to its total dB
-        range, so that 6 dB always occupies the same number of pixels everywhere.
+        """Adjust the two-slot splitter proportions based on how many panels
+        are visible inside canvas_meas (slot1).
+        Has no effect when slot2 is not present.
         """
         if not hasattr(self, '_slot2_area') or not self._slot2_area.isVisible():
             return
@@ -6374,24 +6370,8 @@ class MainWindow(QMainWindow):
         if total <= 0:
             return
 
-        # ── dB range of slot1 (Magnitude panel) ──────────────────────
-        gs         = getattr(self, '_gs', {})
-        tf_min     = gs.get('tf_mag_min', -18.0)
-        tf_max     = gs.get('tf_mag_max',  18.0)
-        tf_db_span = abs(tf_max - tf_min)
-
-        # ── dB range of slot2 (Spectrum / RTA) ───────────────────────
-        sp_min     = gs.get('spec_mag_min', -80.0)
-        sp_max     = gs.get('spec_mag_max',   6.0)
-        sp_db_span = abs(sp_max - sp_min)
-
-        # ── Proportional split ────────────────────────────────────────
-        total_db = tf_db_span + sp_db_span
-        if total_db <= 0:
-            ratio = 0.50
-        else:
-            ratio = tf_db_span / total_db
-
+        ir_on = getattr(self, '_ir_visible', False)
+        ratio = 0.575 if ir_on else 0.50
         self._panel_splitter.setSizes([int(total * ratio), int(total * (1 - ratio))])
 
     def _toggle_ir_panel(self, *args):

@@ -75,7 +75,7 @@
     "ir_visible": true,
     "ir_mag_min": -1.1,
     "ir_mag_max": 1.1,
-    "spec_mag_min": -80.0,
+    "spec_mag_min": -30.0,
     "spec_mag_max": 6.0,
     "sg_vmin": -90.0,
     "sg_vmax": -6.0
