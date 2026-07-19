@@ -350,18 +350,18 @@ def setup_smaart_axis(ax, fmin=20, fmax=20000, bg='#0d0d0d',
             return f'{int(v)}k' if v == int(v) else f'{v}k'
         return f'{x:g}'
 
-    ax.set_xticks(major)
+    ax.xaxis.set_major_locator(_mticker.FixedLocator(major))
     ax.xaxis.set_major_formatter(_mticker.FuncFormatter(_oct_label))
-    ax.set_xticks(minor, minor=True)
+    ax.xaxis.set_minor_locator(_mticker.FixedLocator(minor))
     ax.xaxis.set_minor_formatter(_mticker.NullFormatter())
 
     ax.tick_params(axis='y', labelsize=6, colors='#8a9e8a', length=0)
-    ax.tick_params(axis='x', which='major', labelsize=9, colors='#c8c8c8',
-                   labelbottom=show_xlabels, length=0, pad=3)
+    ax.tick_params(axis='x', which='major', labelsize=6, colors='#9e9e9e',
+                   labelbottom=show_xlabels, length=0, pad=2)
     ax.tick_params(axis='x', which='minor', colors='#3a4a3a', labelbottom=False, length=0)
 
     if show_xlabel:
-        ax.set_xlabel('Frequency (Hz)', fontsize=8, color='#888888', labelpad=4)
+        ax.set_xlabel('Frequency (Hz)', fontsize=6, color='#6a7a6a', labelpad=2)
 
     ax.grid(True, which='major', linestyle='-',  lw=0.55, color='#1e281e')
     ax.grid(True, which='minor', linestyle=':',  lw=0.30, color='#171e17')

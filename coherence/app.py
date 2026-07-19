@@ -1467,11 +1467,31 @@ class MeasurementCanvas(FigureCanvas):
             elif name == 'ph': self.ax_ph.set_position(pos)
             cur_b += h + GAP
 
-        # ── X-axis tick labels — every visible frequency panel shows them ──
+        # ── X-axis ticks — reapply FixedLocator so twinx/redraw can't reset it ──
+        _oct_major = [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+        _oct_minor = [25, 40, 50, 80, 100, 160, 200, 315, 400, 630,
+                      800, 1250, 1600, 2500, 3150, 5000, 6300, 10000, 12500, 20000]
+
+        import matplotlib.ticker as _mt
+
+        def _oct_fmt(x, _):
+            if x >= 1000:
+                v = x / 1000
+                return f'{int(v)}k' if v == int(v) else f'{v}k'
+            return f'{x:g}'
+
+        for _ax in (self.ax_tf, self.ax_ph):
+            _ax.xaxis.set_major_locator(_mt.FixedLocator(_oct_major))
+            _ax.xaxis.set_major_formatter(_mt.FuncFormatter(_oct_fmt))
+            _ax.xaxis.set_minor_locator(_mt.FixedLocator(_oct_minor))
+            _ax.xaxis.set_minor_formatter(_mt.NullFormatter())
+
         self.ax_tf.tick_params(axis='x', which='major', labelsize=6,
-                               colors='#9e9e9e', labelbottom=show_tf)
+                               colors='#9e9e9e', labelbottom=show_tf, length=0, pad=2)
         self.ax_ph.tick_params(axis='x', which='major', labelsize=6,
-                               colors='#9e9e9e', labelbottom=show_ph)
+                               colors='#9e9e9e', labelbottom=show_ph, length=0, pad=2)
+        self.ax_tf.tick_params(axis='x', which='minor', length=0)
+        self.ax_ph.tick_params(axis='x', which='minor', length=0)
 
         # ── Frequency (Hz) xlabel on bottommost visible frequency panel ──
         if show_ph:
