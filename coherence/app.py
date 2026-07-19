@@ -1364,13 +1364,12 @@ class MeasurementCanvas(FigureCanvas):
         # Colores de engines — SMAART verde + cyan
         self._eng_colors = [ENGINE_PALETTE[0], ENGINE_PALETTE[1]]
 
-        f0 = np.array([20.0, 20000.0])
-        _l0, = self.ax_tf.semilogx(f0, [0, 0], color=self._eng_colors[0], lw=2.2, alpha=1.0, label='TF1')
-        _l1, = self.ax_tf.semilogx([], [],     color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-', label='TF2')
+        _l0, = self.ax_tf.semilogx([], [], color=self._eng_colors[0], lw=2.2, alpha=1.0, label='TF1')
+        _l1, = self.ax_tf.semilogx([], [], color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-', label='TF2')
         self._lines_tf    = [_l0, _l1]
-        self.line_tf_avg, = self.ax_tf.semilogx([], [],     color='#ffffff', lw=1.8, alpha=0.85, ls='--', label='AVG')
+        self.line_tf_avg, = self.ax_tf.semilogx([], [], color='#ffffff', lw=1.8, alpha=0.85, ls='--', label='AVG')
         # Coherencia: solo el trazo rojo, sin área de relleno
-        self.line_coh,    = self.ax_coh.semilogx(f0, [0, 0], color=COH_COLOR, lw=1.2, alpha=0.85)
+        self.line_coh,    = self.ax_coh.semilogx([], [], color=COH_COLOR, lw=1.2, alpha=0.85)
         self._coh_fill    = None   # no fill
 
         # ── Phase ──  (fase envuelta −180…+180, estilo SMAART)
@@ -1389,8 +1388,8 @@ class MeasurementCanvas(FigureCanvas):
         self.ax_ph.set_yticks([-180, -90, 0, 90, 180])
         self.ax_ph.tick_params(axis='y', labelsize=6, colors=TEXT_MID, length=0)
 
-        _p0, = self.ax_ph.semilogx(f0, [0, 0], color=self._eng_colors[0], lw=2.2, alpha=1.0)
-        _p1, = self.ax_ph.semilogx([], [],     color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-')
+        _p0, = self.ax_ph.semilogx([], [], color=self._eng_colors[0], lw=2.2, alpha=1.0)
+        _p1, = self.ax_ph.semilogx([], [], color=self._eng_colors[1], lw=1.2, alpha=0.55, ls='-')
         self._lines_ph    = [_p0, _p1]
         self.line_ph_avg, = self.ax_ph.semilogx([], [],     color='#ffffff', lw=1.8, alpha=0.85, ls='--')
         # Aliases backward compat
