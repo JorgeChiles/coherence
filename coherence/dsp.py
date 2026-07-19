@@ -325,33 +325,43 @@ def _hz_label(x, _pos):
 def setup_smaart_axis(ax, fmin=20, fmax=20000, bg='#0d0d0d',
                       show_xlabels=True, show_xlabel=False):
     """
-    Configura un eje X logarítmico con ticks en frecuencias estándar,
-    estilo SMAART oscuro.
+    Configura un eje X logarítmico con ticks en octavas ISO estándar,
+    estilo SMAART oscuro: 31.5, 63, 125, 250, 500, 1k, 2k, 4k, 8k, 16k.
 
-    show_xlabels : muestra los números de frecuencia (20 Hz, 50 Hz, 1 kHz…)
-    show_xlabel  : muestra la etiqueta del eje  "Frecuencia (Hz)"
+    show_xlabels : muestra los números de frecuencia
+    show_xlabel  : muestra la etiqueta del eje "Frequency (Hz)"
     """
     ax.set_xscale('log')
     ax.set_xlim(fmin, fmax)
 
-    major = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-    minor = [25, 31.5, 40, 63, 80, 125, 160, 250, 315, 400,
-             630, 800, 1250, 1600, 2500, 3150, 4000, 6300, 8000,
-             12500, 16000]
+    # ISO octave center frequencies visible in the range
+    major = [f for f in [31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+             if fmin <= f <= fmax]
 
-    # Use FuncFormatter — more robust than FixedFormatter on log scale
+    # 1/3-octave minor ticks (no labels)
+    minor = [f for f in [
+        25, 40, 50, 80, 100, 160, 200, 315, 400, 630,
+        800, 1250, 1600, 2500, 3150, 5000, 6300, 10000, 12500, 20000
+    ] if fmin <= f <= fmax]
+
+    def _oct_label(x, _):
+        if x >= 1000:
+            v = x / 1000
+            return f'{int(v)}k' if v == int(v) else f'{v}k'
+        return f'{x:g}'
+
     ax.set_xticks(major)
-    ax.xaxis.set_major_formatter(_mticker.FuncFormatter(_hz_label))
+    ax.xaxis.set_major_formatter(_mticker.FuncFormatter(_oct_label))
     ax.set_xticks(minor, minor=True)
     ax.xaxis.set_minor_formatter(_mticker.NullFormatter())
 
     ax.tick_params(axis='y', labelsize=6, colors='#8a9e8a', length=0)
-    ax.tick_params(axis='x', which='major', labelsize=6, colors='#9e9e9e',
-                   labelbottom=show_xlabels, length=3)
-    ax.tick_params(axis='x', which='minor', colors='#4a5a4a', labelbottom=False, length=2)
+    ax.tick_params(axis='x', which='major', labelsize=9, colors='#c8c8c8',
+                   labelbottom=show_xlabels, length=0, pad=3)
+    ax.tick_params(axis='x', which='minor', colors='#3a4a3a', labelbottom=False, length=0)
 
     if show_xlabel:
-        ax.set_xlabel('Frequency (Hz)', fontsize=6, color='#6a7a6a', labelpad=2)
+        ax.set_xlabel('Frequency (Hz)', fontsize=8, color='#888888', labelpad=4)
 
     ax.grid(True, which='major', linestyle='-',  lw=0.55, color='#1e281e')
     ax.grid(True, which='minor', linestyle=':',  lw=0.30, color='#171e17')
