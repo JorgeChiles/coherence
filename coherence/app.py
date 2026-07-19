@@ -3996,6 +3996,7 @@ class MainWindow(QMainWindow):
         sr.addWidget(lbl_mag)
         self._tf_search = QLineEdit()
         self._tf_search.setPlaceholderText('Search…')
+        self._tf_search.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self._tf_search.setStyleSheet(
             f'QLineEdit{{background:#111;border:none;border-radius:3px;'
             f'color:{TEXT_MID};font-size:11px;padding:1px 4px;}}')
@@ -4125,6 +4126,7 @@ class MainWindow(QMainWindow):
         sr.addWidget(lbl_mag)
         self._sp_search = QLineEdit()
         self._sp_search.setPlaceholderText('Search…')
+        self._sp_search.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self._sp_search.setStyleSheet(
             f'QLineEdit{{background:#111;border:none;border-radius:3px;'
             f'color:{TEXT_MID};font-size:11px;padding:1px 4px;}}')
@@ -6086,7 +6088,7 @@ class MainWindow(QMainWindow):
                     # ── Migrar formato viejo ───────────────────────────
                     sp_engs = prefs.get('spectrum_engines', [])
                     workspaces = [{
-                        'name': 'Workspace 1',
+                        'name': 'Default Tab',
                         'tf_engines': [],
                         'sp_engines': [
                             {'ch': e.get('ch', 1),
@@ -6100,7 +6102,7 @@ class MainWindow(QMainWindow):
 
         if not workspaces:
             # Primera ejecución o archivo corrupto → workspace vacío
-            workspaces = [{'name': 'Workspace 1', 'tf_engines': [], 'sp_engines': []}]
+            workspaces = [{'name': 'Default Tab', 'tf_engines': [], 'sp_engines': []}]
             current_ws = 0
 
         self._workspaces = workspaces
