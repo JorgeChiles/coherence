@@ -3646,6 +3646,18 @@ class MainWindow(QMainWindow):
         self.resize(1380, 820)
         self.setStyleSheet(QSS)
 
+        # ── App icon — Dock + macOS title bar proxy icon ──────────────
+        from PyQt6.QtGui import QIcon as _QIcon
+        _logo = os.path.join(os.path.dirname(__file__), 'logo_512.png')
+        if not os.path.exists(_logo):
+            _logo = os.path.join(os.path.dirname(__file__), 'logo.png')
+        if os.path.exists(_logo):
+            _icon = _QIcon(_logo)
+            self.setWindowIcon(_icon)
+            QApplication.instance().setWindowIcon(_icon)
+            # macOS: proxy icon in title bar (small icon next to title)
+            self.setWindowFilePath(_logo)
+
         self._build_central()
         self._build_menubar()
         self._build_statusbar()
