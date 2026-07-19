@@ -644,6 +644,155 @@ class TraceRow(QWidget):
         h.addWidget(btn_d)
 
 
+# ── TF Average config + dialog ────────────────────────────────────────
+
+@dataclass
+class TFAvgConfig:
+    """Configuration for a named TF spatial average."""
+    name:         str       = 'Average 1'
+    avg_type:     str       = 'dB'       # 'dB' or 'Power'
+    coh_weighted: bool      = True
+    contributors: List[int] = field(default_factory=list)  # engine indices; [] = all
+
+
+class TFAvgDialog(QDialog):
+    """
+    SMAART-style "New Measurement Average" dialog.
+
+    engine_names : list of str — names of available TF engines (index = engine idx)
+    config       : existing TFAvgConfig to edit, or None to create new
+    """
+
+    def __init__(self, engine_names: List[str],
+                 parent=None, config: TFAvgConfig = None):
+        super().__init__(parent)
+        self._engine_names = engine_names
+        self._editing      = config is not None
+        self._result_cfg   = None   # filled on accept
+
+        title = 'Edit Measurement Average' if self._editing else 'New Measurement Average'
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(380)
+
+        # ── Dark palette ──────────────────────────────────────────────
+        self.setStyleSheet(
+            'QDialog{background:#2a2a2a;color:#cccccc;}'
+            'QLabel{color:#cccccc;}'
+            'QLineEdit{background:#1e1e1e;color:#eeeeee;border:1px solid #444;'
+            '          border-radius:3px;padding:3px 6px;}'
+            'QRadioButton{color:#cccccc;spacing:6px;}'
+            'QCheckBox{color:#cccccc;spacing:6px;}'
+            'QTableWidget{background:#1a1a1a;color:#cccccc;gridline-color:#333;'
+            '             border:1px solid #444;}'
+            'QHeaderView::section{background:#252525;color:#aaaaaa;'
+            '                     border:none;padding:4px;font-size:11px;}'
+            'QPushButton{background:#3a3a3a;color:#cccccc;border:1px solid #555;'
+            '            border-radius:4px;padding:5px 14px;font-size:12px;}'
+            'QPushButton:hover{background:#4a4a4a;}'
+            'QPushButton:pressed{background:#252525;}'
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+
+        # ── Name ──────────────────────────────────────────────────────
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel('Name:'))
+        self._txt_name = QLineEdit(config.name if config else f'Average {1}')
+        name_row.addWidget(self._txt_name)
+        layout.addLayout(name_row)
+
+        # ── Average as ────────────────────────────────────────────────
+        avg_as_row = QHBoxLayout()
+        avg_as_row.addWidget(QLabel('Average as:'))
+        self._rb_db    = QRadioButton('dB')
+        self._rb_power = QRadioButton('Power')
+        self._rb_db.setChecked(True)
+        if config and config.avg_type == 'Power':
+            self._rb_power.setChecked(True)
+        grp = QButtonGroup(self)
+        grp.addButton(self._rb_db);  grp.addButton(self._rb_power)
+        avg_as_row.addWidget(self._rb_db)
+        avg_as_row.addWidget(self._rb_power)
+        avg_as_row.addStretch()
+        layout.addLayout(avg_as_row)
+
+        # ── Coherence Weighted ────────────────────────────────────────
+        self._chk_coh = QCheckBox('Coherence Weighted')
+        self._chk_coh.setChecked(config.coh_weighted if config else True)
+        layout.addWidget(self._chk_coh)
+
+        # ── Contributors table ────────────────────────────────────────
+        layout.addWidget(QLabel('Contributors:'))
+
+        self._tbl = QTableWidget(len(engine_names), 2)
+        self._tbl.setHorizontalHeaderLabels(['Avg', 'Name'])
+        self._tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._tbl.verticalHeader().setVisible(False)
+        self._tbl.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._tbl.setFixedHeight(min(len(engine_names) * 26 + 30, 180))
+
+        initial_contribs = set(config.contributors) if (config and config.contributors) else set(range(len(engine_names)))
+        for row, eng_name in enumerate(engine_names):
+            chk = QCheckBox()
+            chk.setChecked(row in initial_contribs)
+            chk_cell = QWidget()
+            chk_lay  = QHBoxLayout(chk_cell)
+            chk_lay.addWidget(chk); chk_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chk_lay.setContentsMargins(0, 0, 0, 0)
+            self._tbl.setCellWidget(row, 0, chk_cell)
+            name_item = QTableWidgetItem(eng_name)
+            name_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self._tbl.setItem(row, 1, name_item)
+        layout.addWidget(self._tbl)
+
+        # ── Buttons ───────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        if not self._editing:
+            self._btn_create_plus = QPushButton('Create +')
+            self._btn_create_plus.clicked.connect(self._on_create_plus)
+            btn_row.addWidget(self._btn_create_plus)
+        lbl_ok = 'Save & Close' if self._editing else 'Create & Close'
+        self._btn_ok = QPushButton(lbl_ok)
+        self._btn_ok.setDefault(True)
+        self._btn_ok.clicked.connect(self._on_ok)
+        btn_row.addWidget(self._btn_ok)
+        layout.addLayout(btn_row)
+
+    # ── Helpers ───────────────────────────────────────────────────────
+
+    def _build_config(self) -> TFAvgConfig:
+        contributors = [
+            row for row in range(self._tbl.rowCount())
+            if self._tbl.cellWidget(row, 0).layout().itemAt(0).widget().isChecked()
+        ]
+        return TFAvgConfig(
+            name         = self._txt_name.text().strip() or 'Average',
+            avg_type     = 'dB' if self._rb_db.isChecked() else 'Power',
+            coh_weighted = self._chk_coh.isChecked(),
+            contributors = contributors,
+        )
+
+    def _on_ok(self):
+        self._result_cfg = self._build_config()
+        self.accept()
+
+    def _on_create_plus(self):
+        """Emit config and reset form for another entry."""
+        self._result_cfg = self._build_config()
+        self.accept()   # caller checks _create_another flag
+        # Mark as "create another" so caller can reopen
+        self._create_another = True
+
+    def get_config(self) -> TFAvgConfig:
+        return self._result_cfg
+
+
 # ── Dialog de configuración de Spectrum Engine ────────────────────────
 
 class SpectrumEngineDialog(QDialog):
@@ -1188,7 +1337,7 @@ class MeasurementCanvas(FigureCanvas):
         self.ax_coh.tick_params(axis='y', colors=COH_COLOR, labelsize=6, length=0)
         self.ax_coh.set_yticks([0.2, 0.4, 0.6, 0.8])
         self.ax_coh.yaxis.set_major_formatter(
-            _mticker.FuncFormatter(lambda x, _: str(int(round(x * 100)))))
+            ticker.FuncFormatter(lambda x, _: str(int(round(x * 100)))))
         # Disable offset/scientific notation on coherence axis — prevents "×" artifacts
         import matplotlib.ticker as _mticker
         self.ax_coh.yaxis.set_major_formatter(_mticker.ScalarFormatter(useOffset=False))
@@ -4008,7 +4157,7 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QStackedWidget
 
         outer = QWidget()
-        outer.setFixedWidth(160)
+        outer.setFixedWidth(200)
         outer.setStyleSheet(
             f'background:{BG_SETTINGS};border-left:1px solid {BORDER};')
         ov = QVBoxLayout(outer)
@@ -4624,22 +4773,45 @@ class MainWindow(QMainWindow):
         self.btn_show_avg = QPushButton('● AVG')
         self.btn_show_avg.setCheckable(True)
         self.btn_show_avg.setChecked(False)
-        self._show_avg = False
+        self._show_avg      = False
+        self._tf_avg_config = None          # TFAvgConfig or None
         self.btn_show_avg.setStyleSheet(_avg_off_style)
         def _toggle_avg(checked):
             self._show_avg = checked
-            self.btn_show_avg.setText('● AVG')
             self.btn_show_avg.setStyleSheet(_avg_on_style if checked else _avg_off_style)
             if not checked:
                 self.canvas_meas.update_avg(None, None, None, None)
                 if self._secondary_panel is not None:
                     self._secondary_panel.canvas_meas.update_avg(None, None, None, None)
-            # Re-aplicar jerarquía visual con nuevo estado de AVG
             idx = getattr(self, '_selected_engine_idx', 0)
             self.canvas_meas.highlight_engine(idx, show_avg=checked)
             if self._secondary_panel is not None:
                 self._secondary_panel.canvas_meas.highlight_engine(idx, show_avg=checked)
         self.btn_show_avg.clicked.connect(_toggle_avg)
+
+        # Right-click → configure average
+        self.btn_show_avg.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        def _avg_ctx_menu(pos):
+            m = QMenu(self)
+            m.setStyleSheet(
+                'QMenu{background:#1e221e;color:#cccccc;border:1px solid #3a3a3a;}'
+                'QMenu::item{padding:5px 20px 5px 10px;}'
+                'QMenu::item:selected{background:#2a382a;color:#88cc88;}'
+            )
+            act_new  = m.addAction('New TF Avg…')
+            act_edit = m.addAction('Edit Avg…')
+            act_edit.setEnabled(self._tf_avg_config is not None)
+            act_clear = m.addAction('Clear Avg Config')
+            act_clear.setEnabled(self._tf_avg_config is not None)
+            chosen = m.exec(self.btn_show_avg.mapToGlobal(pos))
+            if chosen == act_new:
+                self._open_tf_avg_dialog(edit=False)
+            elif chosen == act_edit:
+                self._open_tf_avg_dialog(edit=True)
+            elif chosen == act_clear:
+                self._tf_avg_config = None
+                self.btn_show_avg.setText('● AVG')
+        self.btn_show_avg.customContextMenuRequested.connect(_avg_ctx_menu)
         # (btn_show_avg se añade al layout en la zona inferior — ver abajo)
 
         # cmb_smooth — mantenido por compatibilidad, sin fila visible en UI
@@ -8317,6 +8489,33 @@ class MainWindow(QMainWindow):
             # Evitar que un error en el timer trabe la UI
             self.sb.showMessage(f'⚠  refresh error: {exc}', 3000)
 
+    def _open_tf_avg_dialog(self, edit: bool = False):
+        """Open the TFAvgDialog to create or edit a TFAvgConfig."""
+        eng_names = []
+        for i, eng in enumerate(self._tf_engines):
+            n = getattr(eng, '_name', None) or f'TF {i + 1}'
+            eng_names.append(n)
+        if not eng_names:
+            QMessageBox.information(self, 'No Engines',
+                                    'Add at least one TF engine before creating an average.')
+            return
+
+        cfg = self._tf_avg_config if edit else None
+        while True:
+            dlg = TFAvgDialog(eng_names, parent=self, config=cfg)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                new_cfg = dlg.get_config()
+                if new_cfg:
+                    self._tf_avg_config = new_cfg
+                    self.btn_show_avg.setText(f'● {new_cfg.name}')
+                    # Auto-enable AVG
+                    self.btn_show_avg.setChecked(True)
+                    self._show_avg = True
+                if getattr(dlg, '_create_another', False):
+                    cfg = None   # reset for next dialog
+                    continue
+            break
+
     def _on_avg_changed(self, idx: int):
         """Cambia n_averages y resetea los acumuladores RunningTF.
 
@@ -8571,7 +8770,36 @@ class MainWindow(QMainWindow):
                     self._secondary_panel.canvas_meas.update_engine_n(_ei, None, None, None)
 
         mag_avg = ph_avg = g2_avg = None
-        if len(_all_lin) > 1:
+        _cfg = getattr(self, '_tf_avg_config', None)
+        if _cfg is not None and len(_all_lin) >= 1:
+            # ── TFAvgConfig: selective contributors, avg type, coh-weighted ──
+            _contribs = _cfg.contributors if _cfg.contributors else list(range(len(_all_lin)))
+            _contribs = [i for i in _contribs if i < len(_all_lin)]
+            if _contribs:
+                _sel_lin = [_all_lin[i] for i in _contribs]
+                _sel_ph  = [_all_ph[i]  for i in _contribs]
+                _sel_g2  = [_all_g2[i]  for i in _contribs]
+                if _cfg.coh_weighted:
+                    _weights = [np.clip(g, 0.0, 1.0) for g in _sel_g2]
+                    _w_sum   = np.sum(_weights, axis=0) + eps
+                    if _cfg.avg_type == 'dB':
+                        _sel_db  = [20.0 * np.log10(l + eps) for l in _sel_lin]
+                        mag_avg  = np.sum([d * w for d, w in zip(_sel_db, _weights)], axis=0) / _w_sum
+                    else:
+                        mag_avg  = 20.0 * np.log10(
+                            np.sum([l * w for l, w in zip(_sel_lin, _weights)], axis=0) / _w_sum + eps)
+                    ph_avg   = np.sum([p * w for p, w in zip(_sel_ph, _weights)], axis=0) / _w_sum
+                    g2_avg   = np.sum([g * w for g, w in zip(_sel_g2, _weights)], axis=0) / _w_sum
+                else:
+                    if _cfg.avg_type == 'dB':
+                        _sel_db  = [20.0 * np.log10(l + eps) for l in _sel_lin]
+                        mag_avg  = np.mean(_sel_db, axis=0)
+                    else:
+                        mag_avg  = 20.0 * np.log10(np.mean(_sel_lin, axis=0) + eps)
+                    ph_avg   = np.mean(_sel_ph, axis=0)
+                    g2_avg   = np.mean(_sel_g2, axis=0)
+        elif len(_all_lin) > 1:
+            # Default: simple linear average of all active engines
             mag_avg = 20.0 * np.log10(np.mean(_all_lin, axis=0) + eps)
             ph_avg  = np.mean(_all_ph, axis=0)
             g2_avg  = np.mean(_all_g2, axis=0)
