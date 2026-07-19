@@ -6359,15 +6359,13 @@ class MainWindow(QMainWindow):
         pass
 
     def _sync_splitter_for_ir(self):
-        """Adjust the two-slot splitter proportions based on how many panels
-        are visible inside canvas_meas (slot1).
+        """Adjust splitter proportions so every panel has the same dB/pixel ratio.
 
-        3 panels (IR + TF + Phase): slot1 = 72%, slot2 = 28%
-        2 panels (IR + TF  or  IR + Phase): slot1 = 62%, slot2 = 38%
-        1 panel  (TF only  or  Phase only): slot1 = 55%, slot2 = 45%
+        Slot1 = canvas_meas (TF / Magnitude / Phase / IR)
+        Slot2 = secondary canvas (Spectrum / RTA)
 
-        Has no effect when slot2 is not present (single-canvas layouts handle
-        proportions purely via matplotlib axis positioning).
+        The physical height of each slot is set proportional to its total dB
+        range, so that 6 dB always occupies the same number of pixels everywhere.
         """
         if not hasattr(self, '_slot2_area') or not self._slot2_area.isVisible():
             return
@@ -6376,10 +6374,24 @@ class MainWindow(QMainWindow):
         if total <= 0:
             return
 
-        ir_on = getattr(self, '_ir_visible', False)
-        # IR on → canvas_meas needs 57.5% (IR 15% + TF/Phase 42.5% of total)
-        # IR off → equal 50/50 split
-        ratio = 0.575 if ir_on else 0.50
+        # ── dB range of slot1 (Magnitude panel) ──────────────────────
+        gs         = getattr(self, '_gs', {})
+        tf_min     = gs.get('tf_mag_min', -18.0)
+        tf_max     = gs.get('tf_mag_max',  18.0)
+        tf_db_span = abs(tf_max - tf_min)
+
+        # ── dB range of slot2 (Spectrum / RTA) ───────────────────────
+        sp_min     = gs.get('spec_mag_min', -80.0)
+        sp_max     = gs.get('spec_mag_max',   6.0)
+        sp_db_span = abs(sp_max - sp_min)
+
+        # ── Proportional split ────────────────────────────────────────
+        total_db = tf_db_span + sp_db_span
+        if total_db <= 0:
+            ratio = 0.50
+        else:
+            ratio = tf_db_span / total_db
+
         self._panel_splitter.setSizes([int(total * ratio), int(total * (1 - ratio))])
 
     def _toggle_ir_panel(self, *args):
