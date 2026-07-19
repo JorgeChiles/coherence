@@ -655,6 +655,14 @@ class TFAvgConfig:
     contributors: List[int] = field(default_factory=list)  # engine indices; [] = all
 
 
+@dataclass
+class SpectrumAvgConfig:
+    """Configuration for a named Spectrum spatial average."""
+    name:         str       = 'Spectrum Avg 1'
+    avg_type:     str       = 'Power'    # 'dB' or 'Power'
+    contributors: List[int] = field(default_factory=list)  # engine indices; [] = all
+
+
 class TFAvgDialog(QDialog):
     """
     SMAART-style "New Measurement Average" dialog.
@@ -664,11 +672,12 @@ class TFAvgDialog(QDialog):
     """
 
     def __init__(self, engine_names: List[str],
-                 parent=None, config: TFAvgConfig = None):
+                 parent=None, config=None, show_coh_weighted: bool = True):
         super().__init__(parent)
-        self._engine_names = engine_names
-        self._editing      = config is not None
-        self._result_cfg   = None   # filled on accept
+        self._engine_names      = engine_names
+        self._editing           = config is not None
+        self._result_cfg        = None
+        self._show_coh_weighted = show_coh_weighted
 
         title = 'Edit Measurement Average' if self._editing else 'New Measurement Average'
         self.setWindowTitle(title)
@@ -719,10 +728,12 @@ class TFAvgDialog(QDialog):
         avg_as_row.addStretch()
         layout.addLayout(avg_as_row)
 
-        # ── Coherence Weighted ────────────────────────────────────────
+        # ── Coherence Weighted (TF only) ──────────────────────────────
         self._chk_coh = QCheckBox('Coherence Weighted')
-        self._chk_coh.setChecked(config.coh_weighted if config else True)
-        layout.addWidget(self._chk_coh)
+        coh_val = getattr(config, 'coh_weighted', True) if config else True
+        self._chk_coh.setChecked(coh_val)
+        if self._show_coh_weighted:
+            layout.addWidget(self._chk_coh)
 
         # ── Contributors table ────────────────────────────────────────
         layout.addWidget(QLabel('Contributors:'))
@@ -2738,10 +2749,10 @@ class SpectrumCanvas(FigureCanvas):
             self._last_Gxx = Gxx
         self.draw_idle()
 
-    def update_ch2_avg(self, lev_y2, lev_avg):
+    def update_ch2_avg(self, lev_y2, lev_avg, freqs=None):
         """Actualiza la línea AVG del spectrum."""
-        fc = self._centers
-        if lev_avg is not None:
+        fc = freqs if freqs is not None else self._centers
+        if lev_avg is not None and len(lev_avg) == len(fc):
             self.line_y_avg.set_data(fc, lev_avg)
         else:
             self.line_y_avg.set_data([], [])
@@ -4775,6 +4786,7 @@ class MainWindow(QMainWindow):
         self.btn_show_avg.setChecked(False)
         self._show_avg      = False
         self._tf_avg_config = None          # TFAvgConfig or None
+        self._sp_avg_config = None          # SpectrumAvgConfig or None
         self.btn_show_avg.setStyleSheet(_avg_off_style)
         def _toggle_avg(checked):
             self._show_avg = checked
@@ -8461,6 +8473,40 @@ class MainWindow(QMainWindow):
                 sp2.update_sp_engine(eng['canvas_idx'], rtf.freqs, rtf.Gxx)
             need_draw = True
 
+        # ── Spectrum Avg ─────────────────────────────────────────────
+        _sp_cfg = getattr(self, '_sp_avg_config', None)
+        if _sp_cfg is not None and self._sp_engines:
+            eps = 1e-12
+            _contribs = _sp_cfg.contributors if _sp_cfg.contributors else list(range(len(self._sp_engines)))
+            _contribs = [i for i in _contribs if i < len(self._sp_engines) and self._sp_engines[i].get('active', True)]
+            _lev_arrays = []
+            _fc_ref     = None
+            for i in _contribs:
+                eng = self._sp_engines[i]
+                rtf = eng.get('rtf')
+                if rtf is None or not rtf._ready:
+                    continue
+                if self.canvas_spec._bpo == 0:
+                    mask = (rtf.freqs >= 20) & (rtf.freqs <= 20000)
+                    _fc_ref = rtf.freqs[mask]
+                    _lev_arrays.append(10.0 * np.log10(rtf.Gxx[mask] + eps))
+                else:
+                    _lev_arrays.append(self.canvas_spec._cpb(
+                        rtf.freqs, rtf.Gxx,
+                        self.canvas_spec._centers, self.canvas_spec._edges))
+                    _fc_ref = self.canvas_spec._centers
+            if _lev_arrays:
+                if _sp_cfg.avg_type == 'dB':
+                    _sp_avg = np.mean(_lev_arrays, axis=0)
+                else:  # Power
+                    _sp_avg = 10.0 * np.log10(np.mean([10.0 ** (l / 10.0) for l in _lev_arrays], axis=0) + eps)
+                self.canvas_spec.update_ch2_avg(None, _sp_avg, freqs=_fc_ref)
+                need_draw = True
+            else:
+                self.canvas_spec.update_ch2_avg(None, None)
+        elif _sp_cfg is None:
+            self.canvas_spec.update_ch2_avg(None, None)
+
         if need_draw:
             self.canvas_spec.draw_idle()
             if (self._secondary_panel is not None and
@@ -8488,6 +8534,27 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             # Evitar que un error en el timer trabe la UI
             self.sb.showMessage(f'⚠  refresh error: {exc}', 3000)
+
+    def _open_sp_avg_dialog(self, edit: bool = False):
+        """Open the TFAvgDialog (Spectrum mode) to create or edit a SpectrumAvgConfig."""
+        eng_names = [e.get('name', f'Spectrum {i+1}') for i, e in enumerate(self._sp_engines)]
+        if not eng_names:
+            QMessageBox.information(self, 'No Engines',
+                                    'Add at least one Spectrum engine first.')
+            return
+        cfg = self._sp_avg_config if edit else None
+        while True:
+            dlg = TFAvgDialog(eng_names, parent=self, config=cfg, show_coh_weighted=False)
+            dlg.setWindowTitle('Edit Spectrum Average' if edit else 'New Spectrum Average')
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                raw = dlg.get_config()
+                if raw:
+                    self._sp_avg_config = SpectrumAvgConfig(
+                        name=raw.name, avg_type=raw.avg_type,
+                        contributors=raw.contributors)
+            if getattr(dlg, '_create_another', False):
+                cfg = None; continue
+            break
 
     def _open_tf_avg_dialog(self, edit: bool = False):
         """Open the TFAvgDialog to create or edit a TFAvgConfig."""
@@ -9158,8 +9225,7 @@ class MainWindow(QMainWindow):
         self._switch_to_spectrum()
 
     def _new_spectrum_avg(self):
-        QMessageBox.information(self, 'New Spectrum Average',
-            'Promedio de espectro.\n(Próximamente)')
+        self._open_sp_avg_dialog(edit=False)
 
     def _new_tf_avg(self):
         self._open_tf_avg_dialog(edit=False)
