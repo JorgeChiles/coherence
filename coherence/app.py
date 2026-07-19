@@ -3980,7 +3980,7 @@ class MainWindow(QMainWindow):
             'QPushButton{font-size:16px;color:#888;border:none;background:transparent;padding:0;}'
             'QPushButton:hover{color:#ccc;}')
         btn_menu_tf.setToolTip('Options')
-        btn_menu_tf.clicked.connect(self._capture_trace_dialog)
+        btn_menu_tf.clicked.connect(lambda: self._show_panel_menu(btn_menu_tf, 'tf'))
         hdr.addWidget(btn_menu_tf)
         v.addWidget(hdr_w)
 
@@ -4109,7 +4109,7 @@ class MainWindow(QMainWindow):
             'QPushButton{font-size:16px;color:#888;border:none;background:transparent;padding:0;}'
             'QPushButton:hover{color:#ccc;}')
         btn_menu_sp.setToolTip('Options')
-        btn_menu_sp.clicked.connect(self._save_spectrum_trace)
+        btn_menu_sp.clicked.connect(lambda: self._show_panel_menu(btn_menu_sp, 'sp'))
         hdr.addWidget(btn_menu_sp)
         v.addWidget(hdr_w)
 
@@ -11210,6 +11210,135 @@ class MainWindow(QMainWindow):
                 visible=tr.visible,
             )
             self._trace_rows_layout.addWidget(row)
+
+    # ── Panel ≡ menu (SMAART-style) ───────────────────────────────────────
+
+    def _show_panel_menu(self, btn: 'QPushButton', panel: str):
+        """Show the SMAART-style ≡ context menu below the button."""
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            'QMenu{'
+            '  background:#2d2d2d;color:#cccccc;border:1px solid #444;'
+            '  font-size:13px;padding:4px 0;'
+            '}'
+            'QMenu::item{padding:5px 24px 5px 16px;}'
+            'QMenu::item:selected{background:#3a5a8a;color:#ffffff;}'
+            'QMenu::item:disabled{color:#555;}'
+            'QMenu::separator{height:1px;background:#444;margin:3px 0;}'
+        )
+
+        def _act(label, shortcut='', enabled=True, fn=None):
+            txt = f'{label}\t{shortcut}' if shortcut else label
+            a = menu.addAction(txt)
+            a.setEnabled(enabled)
+            if fn and enabled:
+                a.triggered.connect(fn)
+            return a
+
+        # Sort By submenu
+        sort_menu = menu.addMenu('Sort By')
+        sort_menu.setStyleSheet(menu.styleSheet())
+        for s in ('Name', 'Date', 'Color'):
+            sort_menu.addAction(s)
+
+        _act('Hide All', 'H', fn=self._hide_all_traces if panel == 'tf' else self._hide_all_sp_traces)
+        menu.addSeparator()
+
+        _act('New Session Folder',      fn=self._new_session_folder)
+        _act('Set Folder Root…',        fn=self._set_folder_root)
+        _act('New Folder',              fn=self._new_folder)
+        _act('New Folder from Selection', enabled=False)
+        menu.addSeparator()
+
+        _act('Save As',   enabled=False)
+        _act('Recapture', 'Space',
+             fn=self._capture_trace_dialog if panel == 'tf' else self._save_spectrum_trace)
+        _act('Rename',    enabled=False)
+        _act('Average',
+             fn=self._open_tf_avg_dialog if panel == 'tf' else self._open_sp_avg_dialog)
+        _act('Assign Random Color', enabled=False)
+        _act('Open File Location',  enabled=False)
+        menu.addSeparator()
+
+        _act('Import Trace…', fn=self._import_trace)
+        _act('Import ASCII…', fn=self._import_ascii)
+        _act('Export To ASCII',            enabled=False)
+        _act('Copy To ASCII',   '©',       enabled=False)
+        _act('Export As Weighting Curve',  enabled=False)
+        _act('Create DSP Channel from Selected', enabled=False)
+        menu.addSeparator()
+
+        _act('Toggle Data/SPL Meter Bar', 'E', fn=self._toggle_spl_bar)
+        menu.addSeparator()
+
+        _act('Show Archive',         fn=self._show_archive)
+        _act('Refresh Data Library', 'R', fn=self._refresh_data_library)
+
+        # Show below the button
+        menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
+
+    # ── Stubs for new panel menu actions ─────────────────────────────────
+
+    def _hide_all_traces(self):
+        for tr in self._traces:
+            tr.visible = False
+        self._rebuild_trace_panel()
+        self._schedule_refresh()
+
+    def _hide_all_sp_traces(self):
+        for tr in getattr(self, '_sp_traces', []):
+            tr.visible = False
+        self._rebuild_trace_panel()
+
+    def _new_session_folder(self):
+        name, ok = QInputDialog.getText(self, 'New Session Folder', 'Folder name:')
+        if ok and name.strip():
+            QMessageBox.information(self, 'New Session Folder',
+                                    f'"{name}" (not yet persisted to disk)')
+
+    def _set_folder_root(self):
+        path = QFileDialog.getExistingDirectory(self, 'Set Folder Root')
+        if path:
+            QMessageBox.information(self, 'Set Folder Root', path)
+
+    def _new_folder(self):
+        name, ok = QInputDialog.getText(self, 'New Folder', 'Folder name:')
+        if ok and name.strip():
+            QMessageBox.information(self, 'New Folder',
+                                    f'"{name}" (not yet persisted to disk)')
+
+    def _import_trace(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Import Trace', '', 'Trace files (*.tf *.txt *.csv);;All files (*)')
+        if path:
+            QMessageBox.information(self, 'Import Trace',
+                                    f'Import from:\n{path}\n(coming soon)')
+
+    def _import_ascii(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Import ASCII', '', 'ASCII files (*.txt *.csv);;All files (*)')
+        if path:
+            QMessageBox.information(self, 'Import ASCII',
+                                    f'Import ASCII from:\n{path}\n(coming soon)')
+
+    def _toggle_spl_bar(self):
+        # Placeholder — will show/hide the SPL meter bar when implemented
+        pass
+
+    def _show_archive(self):
+        QMessageBox.information(self, 'Show Archive', 'Archive (coming soon)')
+
+    def _refresh_data_library(self):
+        self._rebuild_trace_panel()
+
+    def _open_sp_avg_dialog(self, edit: bool = False):
+        cfg = getattr(self, '_sp_avg_config', None)
+        sp_names = [e.get('name', f'Engine {i+1}')
+                    for i, e in enumerate(self._sp_engines)]
+        dlg = TFAvgDialog(sp_names, parent=self,
+                          config=cfg, show_coh_weighted=False)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._sp_avg_config = dlg.result_config()
 
     # ── Búsqueda y trazas Spectrum ────────────────────────────────────
 
