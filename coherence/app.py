@@ -9162,8 +9162,7 @@ class MainWindow(QMainWindow):
             'Promedio de espectro.\n(Próximamente)')
 
     def _new_tf_avg(self):
-        QMessageBox.information(self, 'New TF Average',
-            'Promedio de Transfer Function.\n(Próximamente)')
+        self._open_tf_avg_dialog(edit=False)
 
     def _new_tab(self):
         QMessageBox.information(self, 'New Tab',
