@@ -982,7 +982,7 @@ class SpectrumEngineRow(QWidget):
             f'border:none;padding:0;margin:0;}}'
             f'QPushButton:hover{{color:#ffffff;}}')
         self._dot.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._dot.setToolTip('Click: mostrar/ocultar trazo · Clic derecho: cambiar color')
+        self._dot.setToolTip('Click: show/hide trace · Right-click: change color')
         self._dot.clicked.connect(self._on_toggle_trace)
         self._dot.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._dot.customContextMenuRequested.connect(lambda _: self._on_pick_color())
@@ -1011,7 +1011,7 @@ class SpectrumEngineRow(QWidget):
         # ⚙ config
         btn_cfg = QPushButton('⚙')
         btn_cfg.setFixedSize(22, 22)
-        btn_cfg.setToolTip('Configurar engine')
+        btn_cfg.setToolTip('Configure engine')
         btn_cfg.setStyleSheet(
             f'QPushButton{{font-size:12px;padding:0;border:1px solid #2a2a2a;'
             f'background:transparent;color:#555;border-radius:3px;}}'
@@ -1022,7 +1022,7 @@ class SpectrumEngineRow(QWidget):
         # ✕ eliminar
         btn_d = QPushButton('✕')
         btn_d.setFixedSize(18, 22)
-        btn_d.setToolTip('Eliminar engine')
+        btn_d.setToolTip('Remove engine')
         btn_d.setStyleSheet(
             'QPushButton{font-size:10px;padding:0;border:none;'
             'background:transparent;color:#3a3a3a;}'
@@ -3273,7 +3273,7 @@ class TFEngine(QWidget):
             f'QPushButton:hover{{color:#ffffff;}}')
         dot.setFixedSize(26, 26)
         dot.setCursor(Qt.CursorShape.PointingHandCursor)
-        dot.setToolTip('Click: mostrar/ocultar trazo · Clic derecho: cambiar color')
+        dot.setToolTip('Click: show/hide trace · Right-click: change color')
         dot.clicked.connect(self._on_toggle_trace)
         dot.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         dot.customContextMenuRequested.connect(lambda _: self._on_pick_color())
@@ -3304,7 +3304,7 @@ class TFEngine(QWidget):
         # Botón ⚙ — abre configuración del engine
         btn_cfg = QPushButton('⚙')
         btn_cfg.setFixedSize(22, 22)
-        btn_cfg.setToolTip('Configurar engine')
+        btn_cfg.setToolTip('Configure engine')
         btn_cfg.setStyleSheet(
             f'QPushButton{{font-size:12px;padding:0;border:1px solid #2a2a2a;'
             f'background:transparent;color:#555;border-radius:3px;}}'
@@ -3316,7 +3316,7 @@ class TFEngine(QWidget):
         # Botón ✕ — elimina engine
         btn_rm = QPushButton('✕')
         btn_rm.setFixedSize(18, 22)
-        btn_rm.setToolTip('Eliminar engine')
+        btn_rm.setToolTip('Remove engine')
         btn_rm.setStyleSheet(
             'QPushButton{font-size:10px;padding:0;border:none;'
             'background:transparent;color:#3a3a3a;}'
@@ -8010,21 +8010,21 @@ class MainWindow(QMainWindow):
         # vía _sc() — los QAction NO llevan setShortcut() para evitar
         # "Ambiguous shortcut" (Qt dispararía el slot dos veces).
         # El hint [X] en el texto es solo informativo.
-        xm = mb.addMenu('Comando')
-        xm.addAction('Iniciar  [Space]',          self._on_start)
-        xm.addAction('Detener',                   self._on_stop)
+        xm = mb.addMenu('Command')
+        xm.addAction('Start  [Space]',            self._on_start)
+        xm.addAction('Stop',                      self._on_stop)
         xm.addSeparator()
-        xm.addAction('Buscar Retardo  [D]',       self._on_find_delay)
-        xm.addAction('Resetear Retardo  [R]',     self._on_delay_reset).setShortcut('R')
-        xm.addAction('Congelar  [F]',             lambda: self.btn_freeze_p.click())
+        xm.addAction('Find Delay  [D]',           self._on_find_delay)
+        xm.addAction('Reset Delay  [R]',          self._on_delay_reset).setShortcut('R')
+        xm.addAction('Freeze  [F]',               lambda: self.btn_freeze_p.click())
         xm.addSeparator()
-        xm.addAction('Capturar Traza  [P]',       self._capture_trace_dialog)
-        xm.addAction('Activar/Desact. Ruido  [G]',lambda: self.btn_noise_p.click())
+        xm.addAction('Capture Trace  [P]',        self._capture_trace_dialog)
+        xm.addAction('Enable/Disable Noise  [G]', lambda: self.btn_noise_p.click())
 
-        # ── AYUDA ────────────────────────────────────────────────────
-        hm = mb.addMenu('Ayuda')
-        hm.addAction('Atajos de Teclado', self._show_shortcuts)
-        hm.addAction('Acerca de Coherence…', self._show_about)
+        # ── HELP ─────────────────────────────────────────────────────
+        hm = mb.addMenu('Help')
+        hm.addAction('Keyboard Shortcuts', self._show_shortcuts)
+        hm.addAction('About Coherence…',   self._show_about)
 
         # ── Shortcuts globales — ApplicationShortcut para que funcionen ──
         # aunque el canvas matplotlib tenga el foco de teclado.
@@ -8300,7 +8300,7 @@ class MainWindow(QMainWindow):
         try:
             self.engine.restart()
             if not self.engine.running:
-                raise RuntimeError('El stream no arrancó.')
+                raise RuntimeError('Stream failed to start.')
             self._set_running()
             self.sb.showMessage('▶  Stream restarted', 3000)
         except Exception as exc:
@@ -9297,11 +9297,11 @@ class MainWindow(QMainWindow):
 
     def _show_manage_configs(self):
         QMessageBox.information(self, 'Manage Configurations',
-            'Gestión de configuraciones guardadas.\n(Próximamente)')
+            'Saved configuration management.\n(Coming soon)')
 
     def _show_command_bar_config(self):
         QMessageBox.information(self, 'Command Bar Config',
-            'Configuración de la barra de comandos.\n(Próximamente)')
+            'Command bar configuration.\n(Coming soon)')
 
     def _new_spectrum_measurement(self):
         """Nueva medición de espectro — cambia a vista Spectrum."""
@@ -9315,19 +9315,19 @@ class MainWindow(QMainWindow):
 
     def _new_tab(self):
         QMessageBox.information(self, 'New Tab',
-            'Nueva pestaña de medición.\n(Próximamente)')
+            'New measurement tab.\n(Coming soon)')
 
     def _duplicate_tab(self):
         QMessageBox.information(self, 'Duplicate Tab',
-            'Duplicar pestaña actual.\n(Próximamente)')
+            'Duplicate current tab.\n(Coming soon)')
 
     def _delete_tab(self):
         QMessageBox.information(self, 'Delete Tab',
-            'Eliminar pestaña actual.\n(Próximamente)')
+            'Delete current tab.\n(Coming soon)')
 
     def _move_tab(self):
         QMessageBox.information(self, 'Move Tab',
-            'Mover pestaña.\n(Próximamente)')
+            'Move tab.\n(Coming soon)')
 
     def _show_amplitude_cal(self):
         self._show_spl_calibration_dialog()
@@ -10956,8 +10956,8 @@ class MainWindow(QMainWindow):
     def _show_about(self):
         QMessageBox.about(self, 'Coherence v0.2',
             '<b>Coherence v0.2</b><br>'
-            'Analizador de audio en tiempo real<br>'
-            'Alternativa libre a SMAART<br><br>'
+            'Real-time audio analyzer<br>'
+            'Free alternative to SMAART<br><br>'
             'GPL v3 — github.com/JorgeChiles/coherence<br>'
             '<small>Jorge Peña (JorgeChiles) © 2024</small>'
         )
