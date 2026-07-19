@@ -3897,18 +3897,22 @@ class MainWindow(QMainWindow):
             '  background:transparent;'
             '}'
             'QTabBar::tab{'
-            '  background:#111111; color:#666666;'
-            '  border:none; border-right:1px solid #222222;'
-            '  padding:0px 18px 0px 14px; margin:0; min-width:90px;'
-            '  height:30px;'
-            '  font-size:12px; font-weight:normal;'
+            '  background:#3a3a3a; color:#aaaaaa;'
+            '  border:1px solid #555555;'
+            '  border-bottom:none;'
+            '  border-top-left-radius:5px;'
+            '  border-top-right-radius:5px;'
+            '  padding:0px 20px 0px 14px; margin-right:2px; min-width:90px;'
+            '  height:28px;'
+            '  font-size:11px; font-weight:bold; letter-spacing:0.5px;'
             '}'
             'QTabBar::tab:selected{'
-            '  background:#1c1c1c; color:#e2e2e2;'
-            '  border-bottom:2px solid #4aaa6a;'
+            '  background:#1c1c1c; color:#ffffff;'
+            '  border-color:#666666;'
+            '  border-bottom:2px solid #1c1c1c;'
             '}'
             'QTabBar::tab:hover:!selected{'
-            '  background:#171717; color:#aaaaaa;'
+            '  background:#444444; color:#dddddd;'
             '}'
             'QTabBar::close-button{'
             '  subcontrol-position:right; subcontrol-origin:padding;'
@@ -3954,70 +3958,103 @@ class MainWindow(QMainWindow):
         """Panel SAVE izquierdo — vista TF / IR (índice 0 del _save_stack)."""
         panel = QWidget()
         panel.setObjectName('save_panel')
+        panel.setStyleSheet('background:#1a1a1a;')
         v = QVBoxLayout(panel)
-        v.setContentsMargins(4, 4, 4, 4)
-        v.setSpacing(3)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
 
-        # ── Header: título + botón lupa ───────────────────────────────
-        hdr = QHBoxLayout(); hdr.setSpacing(4)
-        title = QLabel('TF / IR')
+        # ── Header SMAART-style ───────────────────────────────────────
+        hdr_w = QWidget()
+        hdr_w.setFixedHeight(34)
+        hdr_w.setStyleSheet('background:#252525;border-bottom:1px solid #333;')
+        hdr = QHBoxLayout(hdr_w)
+        hdr.setContentsMargins(8, 0, 6, 0)
+        hdr.setSpacing(4)
+        title = QLabel('Transfer Function')
         title.setStyleSheet(
-            f'color:{ACCENT};font-size:9px;letter-spacing:2px;font-weight:bold;'
-            f'padding:2px 0;border-bottom:1px solid {BORDER};background:transparent;')
+            'color:#e0e0e0;font-size:12px;font-weight:bold;background:transparent;')
         hdr.addWidget(title, stretch=1)
-        btn_lupa_tf = QPushButton('🔍')
-        btn_lupa_tf.setFixedSize(22, 20)
-        btn_lupa_tf.setToolTip('Search trace…')
-        btn_lupa_tf.setStyleSheet(
-            'QPushButton{font-size:11px;padding:0;border:none;background:transparent;color:#555;}'
-            'QPushButton:hover{color:#aaa;}')
-        hdr.addWidget(btn_lupa_tf)
-        v.addLayout(hdr)
+        btn_menu_tf = QPushButton('≡')
+        btn_menu_tf.setFixedSize(24, 24)
+        btn_menu_tf.setStyleSheet(
+            'QPushButton{font-size:16px;color:#888;border:none;background:transparent;padding:0;}'
+            'QPushButton:hover{color:#ccc;}')
+        btn_menu_tf.setToolTip('Options')
+        btn_menu_tf.clicked.connect(self._capture_trace_dialog)
+        hdr.addWidget(btn_menu_tf)
+        v.addWidget(hdr_w)
 
-        # Barra de búsqueda (oculta por defecto)
+        # ── Search row ────────────────────────────────────────────────
+        search_w = QWidget()
+        search_w.setFixedHeight(32)
+        search_w.setStyleSheet('background:#1a1a1a;border-bottom:1px solid #2a2a2a;')
+        sr = QHBoxLayout(search_w)
+        sr.setContentsMargins(6, 4, 6, 4)
+        sr.setSpacing(4)
+        lbl_mag = QLabel('🔍')
+        lbl_mag.setStyleSheet('color:#666;font-size:11px;background:transparent;')
+        sr.addWidget(lbl_mag)
         self._tf_search = QLineEdit()
-        self._tf_search.setPlaceholderText('Search trace...')
-        self._tf_search.setFixedHeight(20)
+        self._tf_search.setPlaceholderText('Search…')
         self._tf_search.setStyleSheet(
-            f'QLineEdit{{background:#161616;border:1px solid {BORDER};border-radius:3px;'
-            f'color:{TEXT_MID};font-size:9px;padding:0 4px;}}')
-        self._tf_search.setVisible(False)
+            f'QLineEdit{{background:#111;border:none;border-radius:3px;'
+            f'color:{TEXT_MID};font-size:11px;padding:1px 4px;}}')
         self._tf_search.textChanged.connect(self._filter_tf_traces)
-        v.addWidget(self._tf_search)
-        btn_lupa_tf.clicked.connect(lambda: (
-            self._tf_search.setVisible(not self._tf_search.isVisible()),
-            self._tf_search.setFocus() if self._tf_search.isVisible() else None
-        ))
+        sr.addWidget(self._tf_search, stretch=1)
+        v.addWidget(search_w)
 
-        v.addWidget(sep())
-
-        # ── Sección TRAZAS TF ─────────────────────────────────────────
-        v.addWidget(sep())
-
-        tt = QLabel('TRAZAS  TF')
-        tt.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tt.setStyleSheet(
-            f'color:{ACCENT};font-size:9px;letter-spacing:2px;font-weight:bold;'
-            f'padding:2px 0;background:transparent;')
-        v.addWidget(tt)
-
-        btn_save_trace = QPushButton('📌  SAVE TRACE')
-        btn_save_trace.setToolTip(
-            f'Save current measurement as a reference trace (max {MAX_TRACES})')
-        btn_save_trace.setMinimumHeight(28)
-        btn_save_trace.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # ── Session Data folder header ─────────────────────────────────
+        folder_w = QWidget()
+        folder_w.setFixedHeight(28)
+        folder_w.setStyleSheet('background:#1a1a1a;')
+        fl = QHBoxLayout(folder_w)
+        fl.setContentsMargins(8, 0, 8, 0)
+        fl.setSpacing(6)
+        lbl_folder = QLabel('📁')
+        lbl_folder.setStyleSheet('font-size:13px;background:transparent;')
+        fl.addWidget(lbl_folder)
+        lbl_session = QLabel('Session Data')
+        lbl_session.setStyleSheet('color:#cccccc;font-size:11px;background:transparent;')
+        fl.addWidget(lbl_session, stretch=1)
+        btn_save_trace = QPushButton('+')
+        btn_save_trace.setFixedSize(18, 18)
+        btn_save_trace.setToolTip(f'Save trace (max {MAX_TRACES})')
+        btn_save_trace.setStyleSheet(
+            'QPushButton{color:#888;font-size:14px;border:none;background:transparent;padding:0;}'
+            'QPushButton:hover{color:#4aaa6a;}')
         btn_save_trace.clicked.connect(self._capture_trace_dialog)
-        v.addWidget(btn_save_trace)
+        fl.addWidget(btn_save_trace)
+        v.addWidget(folder_w)
 
-        # Lista de filas de trazas
-        self._trace_rows_widget = QWidget()
-        self._trace_rows_widget.setStyleSheet('background:transparent;')
-        self._trace_rows_layout = QVBoxLayout(self._trace_rows_widget)
+        sep_line = QFrame(); sep_line.setFrameShape(QFrame.Shape.HLine)
+        sep_line.setStyleSheet('color:#2a2a2a;')
+        v.addWidget(sep_line)
+
+        # ── Lista de trazas ───────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            'QScrollArea{border:none;background:#1a1a1a;}'
+            'QScrollBar:vertical{background:#111;width:6px;border-radius:3px;}'
+            'QScrollBar::handle:vertical{background:#333;border-radius:3px;}'
+            'QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}')
+
+        inner = QWidget()
+        inner.setStyleSheet('background:#1a1a1a;')
+        self._trace_rows_layout = QVBoxLayout(inner)
         self._trace_rows_layout.setContentsMargins(0, 2, 0, 2)
-        self._trace_rows_layout.setSpacing(1)
-        v.addWidget(self._trace_rows_widget)
+        self._trace_rows_layout.setSpacing(0)
 
-        v.addStretch()
+        self._lbl_no_data_tf = QLabel('   No Data')
+        self._lbl_no_data_tf.setStyleSheet(
+            'color:#444;font-size:11px;padding:8px 0;background:transparent;')
+        self._trace_rows_layout.addWidget(self._lbl_no_data_tf)
+        self._trace_rows_layout.addStretch()
+
+        self._trace_rows_widget = inner
+        scroll.setWidget(inner)
+        v.addWidget(scroll, stretch=1)
         return panel
 
     def _build_collapsible_save_panel(self):
@@ -4029,7 +4066,7 @@ class MainWindow(QMainWindow):
         h.setSpacing(0)
 
         self._save_stack = QStackedWidget()
-        self._save_stack.setFixedWidth(155)
+        self._save_stack.setFixedWidth(180)
         self._save_stack.addWidget(self._build_save_panel())       # 0 — TF / IR
         self._save_stack.addWidget(self._build_save_spec_panel())  # 1 — Spectrum
         h.addWidget(self._save_stack)
@@ -4050,79 +4087,103 @@ class MainWindow(QMainWindow):
         """Panel SAVE izquierdo — vista Spectrum (índice 1 del _save_stack)."""
         panel = QWidget()
         panel.setObjectName('save_panel')
+        panel.setStyleSheet('background:#1a1a1a;')
         v = QVBoxLayout(panel)
-        v.setContentsMargins(4, 4, 4, 4)
-        v.setSpacing(3)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
 
-        # ── Header: título + botón lupa ───────────────────────────────
-        hdr = QHBoxLayout(); hdr.setSpacing(4)
-        title = QLabel('SPECTRUM')
+        # ── Header SMAART-style ───────────────────────────────────────
+        hdr_w = QWidget()
+        hdr_w.setFixedHeight(34)
+        hdr_w.setStyleSheet('background:#252525;border-bottom:1px solid #333;')
+        hdr = QHBoxLayout(hdr_w)
+        hdr.setContentsMargins(8, 0, 6, 0)
+        hdr.setSpacing(4)
+        title = QLabel('Spectrum')
         title.setStyleSheet(
-            f'color:{GREEN};font-size:9px;letter-spacing:2px;font-weight:bold;'
-            f'padding:2px 0;border-bottom:1px solid {BORDER};background:transparent;')
+            'color:#e0e0e0;font-size:12px;font-weight:bold;background:transparent;')
         hdr.addWidget(title, stretch=1)
-        btn_lupa_sp = QPushButton('🔍')
-        btn_lupa_sp.setFixedSize(22, 20)
-        btn_lupa_sp.setToolTip('Search trace…')
-        btn_lupa_sp.setStyleSheet(
-            'QPushButton{font-size:11px;padding:0;border:none;background:transparent;color:#555;}'
-            'QPushButton:hover{color:#aaa;}')
-        hdr.addWidget(btn_lupa_sp)
-        v.addLayout(hdr)
+        btn_menu_sp = QPushButton('≡')
+        btn_menu_sp.setFixedSize(24, 24)
+        btn_menu_sp.setStyleSheet(
+            'QPushButton{font-size:16px;color:#888;border:none;background:transparent;padding:0;}'
+            'QPushButton:hover{color:#ccc;}')
+        btn_menu_sp.setToolTip('Options')
+        btn_menu_sp.clicked.connect(self._save_spectrum_trace)
+        hdr.addWidget(btn_menu_sp)
+        v.addWidget(hdr_w)
 
-        # Barra de búsqueda (oculta por defecto)
+        # ── Search row ────────────────────────────────────────────────
+        search_w = QWidget()
+        search_w.setFixedHeight(32)
+        search_w.setStyleSheet('background:#1a1a1a;border-bottom:1px solid #2a2a2a;')
+        sr = QHBoxLayout(search_w)
+        sr.setContentsMargins(6, 4, 6, 4)
+        sr.setSpacing(4)
+        lbl_mag = QLabel('🔍')
+        lbl_mag.setStyleSheet('color:#666;font-size:11px;background:transparent;')
+        sr.addWidget(lbl_mag)
         self._sp_search = QLineEdit()
-        self._sp_search.setPlaceholderText('Search trace...')
-        self._sp_search.setFixedHeight(20)
+        self._sp_search.setPlaceholderText('Search…')
         self._sp_search.setStyleSheet(
-            f'QLineEdit{{background:#161616;border:1px solid {BORDER};border-radius:3px;'
-            f'color:{TEXT_MID};font-size:9px;padding:0 4px;}}')
-        self._sp_search.setVisible(False)
+            f'QLineEdit{{background:#111;border:none;border-radius:3px;'
+            f'color:{TEXT_MID};font-size:11px;padding:1px 4px;}}')
         self._sp_search.textChanged.connect(self._filter_sp_traces)
-        v.addWidget(self._sp_search)
-        btn_lupa_sp.clicked.connect(lambda: (
-            self._sp_search.setVisible(not self._sp_search.isVisible()),
-            self._sp_search.setFocus() if self._sp_search.isVisible() else None
-        ))
+        sr.addWidget(self._sp_search, stretch=1)
+        v.addWidget(search_w)
 
-        v.addWidget(sep())
-
-        for label, tip, fn in [
-            ('SAVE SPECTRUM', 'Save Spectrum as .txt', self._save_sp_txt),
-            ('SAVE  PNG',     'Save graph as PNG',     self._save_graph_png),
-        ]:
-            btn = QPushButton(label)
-            btn.setToolTip(tip)
-            btn.setMinimumHeight(28)
-            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            btn.clicked.connect(fn)
-            v.addWidget(btn)
-
-        # ── Sección TRAZAS Spectrum ───────────────────────────────────
-        v.addWidget(sep())
-
-        tt = QLabel('TRAZAS  SP')
-        tt.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tt.setStyleSheet(
-            f'color:{GREEN};font-size:9px;letter-spacing:2px;font-weight:bold;'
-            f'padding:2px 0;background:transparent;')
-        v.addWidget(tt)
-
-        btn_save_sp_trace = QPushButton('📌  SAVE TRACE')
-        btn_save_sp_trace.setToolTip('Save current spectrum as a reference trace')
-        btn_save_sp_trace.setMinimumHeight(28)
-        btn_save_sp_trace.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # ── Session Data folder header ─────────────────────────────────
+        folder_w = QWidget()
+        folder_w.setFixedHeight(28)
+        folder_w.setStyleSheet('background:#1a1a1a;')
+        fl = QHBoxLayout(folder_w)
+        fl.setContentsMargins(8, 0, 8, 0)
+        fl.setSpacing(6)
+        lbl_folder = QLabel('📁')
+        lbl_folder.setStyleSheet('font-size:13px;background:transparent;')
+        fl.addWidget(lbl_folder)
+        lbl_session = QLabel('Session Data')
+        lbl_session.setStyleSheet('color:#cccccc;font-size:11px;background:transparent;')
+        fl.addWidget(lbl_session, stretch=1)
+        btn_save_sp_trace = QPushButton('+')
+        btn_save_sp_trace.setFixedSize(18, 18)
+        btn_save_sp_trace.setToolTip('Save spectrum trace')
+        btn_save_sp_trace.setStyleSheet(
+            'QPushButton{color:#888;font-size:14px;border:none;background:transparent;padding:0;}'
+            'QPushButton:hover{color:#4aaa6a;}')
         btn_save_sp_trace.clicked.connect(self._save_spectrum_trace)
-        v.addWidget(btn_save_sp_trace)
+        fl.addWidget(btn_save_sp_trace)
+        v.addWidget(folder_w)
 
-        self._sp_trace_rows_widget = QWidget()
-        self._sp_trace_rows_widget.setStyleSheet('background:transparent;')
-        self._sp_trace_rows_layout = QVBoxLayout(self._sp_trace_rows_widget)
+        sep_line = QFrame(); sep_line.setFrameShape(QFrame.Shape.HLine)
+        sep_line.setStyleSheet('color:#2a2a2a;')
+        v.addWidget(sep_line)
+
+        # ── Lista de trazas ───────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            'QScrollArea{border:none;background:#1a1a1a;}'
+            'QScrollBar:vertical{background:#111;width:6px;border-radius:3px;}'
+            'QScrollBar::handle:vertical{background:#333;border-radius:3px;}'
+            'QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}')
+
+        inner = QWidget()
+        inner.setStyleSheet('background:#1a1a1a;')
+        self._sp_trace_rows_layout = QVBoxLayout(inner)
         self._sp_trace_rows_layout.setContentsMargins(0, 2, 0, 2)
-        self._sp_trace_rows_layout.setSpacing(1)
-        v.addWidget(self._sp_trace_rows_widget)
+        self._sp_trace_rows_layout.setSpacing(0)
 
-        v.addStretch()
+        self._lbl_no_data_sp = QLabel('   No Data')
+        self._lbl_no_data_sp.setStyleSheet(
+            'color:#444;font-size:11px;padding:8px 0;background:transparent;')
+        self._sp_trace_rows_layout.addWidget(self._lbl_no_data_sp)
+        self._sp_trace_rows_layout.addStretch()
+
+        self._sp_trace_rows_widget = inner
+        scroll.setWidget(inner)
+        v.addWidget(scroll, stretch=1)
         return panel
 
     def _build_collapsible_settings(self):
